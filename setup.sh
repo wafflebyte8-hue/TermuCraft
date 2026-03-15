@@ -189,7 +189,8 @@ install_runtime() {
 }
 
 collect_install_plan() {
-  KEEP_EXISTING=0
+  KEEP_EXISTING_CONFIG=0
+  KEEP_EXISTING_AUTH=0
   SERVER_DIR="$DEFAULT_SERVER_DIR"
   MC_RAM="$(suggest_memory)"
   PANEL_PORT="8080"
@@ -198,13 +199,15 @@ collect_install_plan() {
   HTTPS_CERT_DIR="$UI_DIR/certs"
   HTTPS_CERT_PATH="$HTTPS_CERT_DIR/cert.pem"
   HTTPS_KEY_PATH="$HTTPS_CERT_DIR/key.pem"
+  ADMIN_USER="admin"
+  ADMIN_PASS=""
 
   section "Stage 4 · Building the install plan"
 
   if [ -f "$UI_DIR/config.json" ] && [ -f "$UI_DIR/auth.json" ]; then
     ok "Existing TermuCraft install detected."
-    if prompt_yes_no "Keep the current config and credentials?" Y; then
-      KEEP_EXISTING=1
+    if prompt_yes_no "Keep the current panel config?" Y; then
+      KEEP_EXISTING_CONFIG=1
       SERVER_DIR="$(json_get "$UI_DIR/config.json" "serverDir" || printf '%s' "$DEFAULT_SERVER_DIR")"
       MC_RAM="$(json_get "$UI_DIR/config.json" "memory" || printf '%s' "$(suggest_memory)")"
       PANEL_PORT="$(json_get "$UI_DIR/config.json" "uiPort" || printf '8080')"
@@ -215,41 +218,50 @@ collect_install_plan() {
         HTTPS_KEY_PATH="$(json_get "$UI_DIR/config.json" "httpsKeyPath" || printf '%s' "$HTTPS_KEY_PATH")"
       fi
       note "Current config will be preserved."
-      return
+    fi
+
+    if prompt_yes_no "Keep the current panel login?" Y; then
+      KEEP_EXISTING_AUTH=1
+      ADMIN_USER="$(json_get "$UI_DIR/auth.json" "username" || printf 'admin')"
+      note "Current login will be preserved for user: $ADMIN_USER"
     fi
   fi
 
-  SERVER_DIR="$(prompt_default "Minecraft server directory" "$DEFAULT_SERVER_DIR")"
+  if [ "$KEEP_EXISTING_CONFIG" -eq 0 ]; then
+    SERVER_DIR="$(prompt_default "Minecraft server directory" "$DEFAULT_SERVER_DIR")"
 
-  while :; do
-    PANEL_PORT="$(prompt_default "Panel HTTP port" "8080")"
-    normalize_port "$PANEL_PORT" && break
-    warn "Enter a valid port between 1 and 65535."
-  done
-
-  while :; do
-    local_memory="$(prompt_default "Minecraft server RAM" "$(suggest_memory)")"
-    if MC_RAM="$(normalize_memory "$local_memory")"; then
-      break
-    fi
-    warn "Use values like 768M, 1G, or 2G."
-  done
-
-  while :; do
-    ADMIN_USER="$(prompt_default "Panel username" "admin")"
-    [ -n "$ADMIN_USER" ] && break
-    warn "Username cannot be empty."
-  done
-
-  ADMIN_PASS="$(prompt_secret_pair "Panel password" "Confirm password")"
-
-  if prompt_yes_no "Generate a self-signed HTTPS certificate for the panel?" N; then
-    ENABLE_HTTPS=1
     while :; do
-      HTTPS_PORT="$(prompt_default "Panel HTTPS port" "8443")"
-      normalize_port "$HTTPS_PORT" && break
+      PANEL_PORT="$(prompt_default "Panel HTTP port" "8080")"
+      normalize_port "$PANEL_PORT" && break
       warn "Enter a valid port between 1 and 65535."
     done
+
+    while :; do
+      local_memory="$(prompt_default "Minecraft server RAM" "$(suggest_memory)")"
+      if MC_RAM="$(normalize_memory "$local_memory")"; then
+        break
+      fi
+      warn "Use values like 768M, 1G, or 2G."
+    done
+
+    if prompt_yes_no "Generate a self-signed HTTPS certificate for the panel?" N; then
+      ENABLE_HTTPS=1
+      while :; do
+        HTTPS_PORT="$(prompt_default "Panel HTTPS port" "8443")"
+        normalize_port "$HTTPS_PORT" && break
+        warn "Enter a valid port between 1 and 65535."
+      done
+    fi
+  fi
+
+  if [ "$KEEP_EXISTING_AUTH" -eq 0 ]; then
+    while :; do
+      ADMIN_USER="$(prompt_default "Panel username" "$ADMIN_USER")"
+      [ -n "$ADMIN_USER" ] && break
+      warn "Username cannot be empty."
+    done
+
+    ADMIN_PASS="$(prompt_secret_pair "Panel password" "Confirm password")"
   fi
 }
 
@@ -330,13 +342,19 @@ deploy_payload() {
   install -m 0755 "$TMP_DIR/uninstall.sh" "$HOME/uninstall-termucraft.sh"
   ok "Application files copied"
 
-  if [ "$KEEP_EXISTING" -eq 0 ]; then
+  if [ "$KEEP_EXISTING_CONFIG" -eq 0 ]; then
     write_config
-    write_auth
     generate_https_cert
-    ok "Fresh config written"
+    ok "Config written"
   else
     ok "Existing config kept"
+  fi
+
+  if [ "$KEEP_EXISTING_AUTH" -eq 0 ]; then
+    write_auth
+    ok "Panel login written for user: $ADMIN_USER"
+  else
+    ok "Existing panel login kept for user: $ADMIN_USER"
   fi
 }
 
@@ -411,10 +429,11 @@ EOF
 }
 
 print_summary() {
-  local http_port https_enabled https_port protocol panel_port launch_fg launch_bg
+  local http_port https_enabled https_port protocol panel_port launch_fg launch_bg summary_user
   http_port="$(json_get "$UI_DIR/config.json" "uiPort" || printf '8080')"
   https_enabled="$(json_get "$UI_DIR/config.json" "httpsEnabled" || printf 'false')"
   https_port="$(json_get "$UI_DIR/config.json" "httpsPort" || printf '8443')"
+  summary_user="$(json_get "$UI_DIR/auth.json" "username" || printf 'admin')"
   protocol="http"
   if [ "$https_enabled" = "true" ]; then
     protocol="https"
@@ -427,6 +446,7 @@ print_summary() {
   section "Ready"
   echo -e "  ${D}Panel files${N}    $UI_DIR"
   echo -e "  ${D}Server files${N}   $SERVER_DIR"
+  echo -e "  ${D}Panel login${N}    $summary_user"
   echo -e "  ${D}HTTP port${N}      $http_port"
   if [ "$https_enabled" = "true" ]; then
     echo -e "  ${D}HTTPS port${N}     $https_port"
