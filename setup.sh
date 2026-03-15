@@ -1,52 +1,14 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# TermuCraft setup / update script for Termux
+# TermuCraft install / update wizard for Termux
 
 set -euo pipefail
 
-G='\033[0;32m'
-A='\033[1;33m'
-R='\033[0;31m'
-B='\033[0;34m'
-D='\033[2m'
-N='\033[0m'
-
-log()  { echo -e "${G}[OK]${N} $1"; }
-warn() { echo -e "${A}[!]${N} $1"; }
-err()  { echo -e "${R}[X]${N} $1"; exit 1; }
-info() { echo -e "${B}[i]${N} $1"; }
-step() {
-  echo ""
-  echo -e "${G}----------------------------------------${N}"
-  echo -e "  $1"
-  echo -e "${G}----------------------------------------${N}"
-}
-
-TERMUCRAFT_VERSION="0.1.0"
+APP_NAME="TermuCraft"
+APP_VERSION="0.1.0"
 REPO_RAW="https://raw.githubusercontent.com/wafflebyte8-hue/TermuCraft/main"
 UI_DIR="$HOME/TermuCraft"
-MC_DIR="$HOME/minecraft"
-TMP_DIR="$HOME/.termucraft-install.$$"
-
-cleanup() {
-  rm -rf "$TMP_DIR" 2>/dev/null || true
-}
-trap cleanup EXIT
-
-clear
-echo ""
-echo -e "${G}  TermuCraft Setup${N}"
-echo -e "${D}  Minecraft server panel for Termux${N}"
-echo ""
-
-mkdir -p "$TMP_DIR" || err "Could not create temp directory"
-
-if [ ! -d "/data/data/com.termux" ]; then
-  warn "This does not look like Termux."
-  read -r -p "  Continue anyway? [y/N]: " cont
-  [[ "$cont" =~ ^[Yy]$ ]] || exit 1
-fi
-
-step "Downloading panel files"
+DEFAULT_SERVER_DIR="$HOME/termucraft-server"
+TMP_DIR="$(mktemp -d "$HOME/.termucraft-stage.XXXXXX")"
 
 FILES=(
   "server.js"
@@ -60,142 +22,245 @@ FILES=(
   "checksums.sha256"
 )
 
-for file in "${FILES[@]}"; do
-  info "Downloading $file..."
-  curl -fsSL "$REPO_RAW/$file" -o "$TMP_DIR/$file" || err "Failed to download $file"
-done
+G='\033[0;32m'
+C='\033[0;36m'
+Y='\033[1;33m'
+R='\033[0;31m'
+D='\033[2m'
+N='\033[0m'
 
-if command -v sha256sum >/dev/null 2>&1; then
-  info "Verifying downloads..."
+cleanup() {
+  rm -rf "$TMP_DIR" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+ok()   { echo -e "${G}[ok]${N} $1"; }
+note() { echo -e "${C}[..]${N} $1"; }
+warn() { echo -e "${Y}[!]${N} $1"; }
+die()  { echo -e "${R}[x]${N} $1"; exit 1; }
+
+line() {
+  printf '%b\n' "${D}------------------------------------------------------------${N}"
+}
+
+banner() {
+  clear
+  echo ""
+  echo -e "${G}  _______                                   ______              __${N}"
+  echo -e "${G} /_  __/__  _________ ___  __  __________ _/ ____/__________ _/ /_${N}"
+  echo -e "${G}  / / / _ \\/ ___/ __ \`__ \\/ / / / ___/ __ \`/ /   / ___/ __ \`/ __/${N}"
+  echo -e "${G} / / /  __/ /  / / / / / / /_/ / /__/ /_/ / /___/ /  / /_/ / /_  ${N}"
+  echo -e "${G}/_/  \\___/_/  /_/ /_/ /_/\\__,_/\\___/\\__,_/\\____/_/   \\__,_/\\__/  ${N}"
+  echo -e "${D}  Version ${APP_VERSION} · Termux-first Minecraft control deck${N}"
+  echo ""
+}
+
+section() {
+  echo ""
+  line
+  echo -e "${G}$1${N}"
+  line
+}
+
+prompt_default() {
+  local label="$1"
+  local default="$2"
+  local answer=""
+  read -r -p "  ${label} [${default}]: " answer
+  printf '%s' "${answer:-$default}"
+}
+
+prompt_yes_no() {
+  local label="$1"
+  local default="${2:-Y}"
+  local answer=""
+  if [ "$default" = "Y" ]; then
+    read -r -p "  ${label} [Y/n]: " answer
+    [[ ! "$answer" =~ ^[Nn]$ ]]
+  else
+    read -r -p "  ${label} [y/N]: " answer
+    [[ "$answer" =~ ^[Yy]$ ]]
+  fi
+}
+
+prompt_secret_pair() {
+  local first_label="$1"
+  local second_label="$2"
+  local first=""
+  local second=""
+  while :; do
+    read -r -s -p "  ${first_label}: " first
+    echo ""
+    read -r -s -p "  ${second_label}: " second
+    echo ""
+    [ -n "$first" ] || { warn "Password cannot be empty."; continue; }
+    [ "$first" = "$second" ] && break
+    warn "Passwords did not match."
+  done
+  printf '%s' "$first"
+}
+
+normalize_port() {
+  local value="$1"
+  [[ "$value" =~ ^[0-9]+$ ]] || return 1
+  [ "$value" -ge 1 ] && [ "$value" -le 65535 ]
+}
+
+normalize_memory() {
+  local value="${1^^}"
+  [[ "$value" =~ ^[0-9]+[MG]$ ]] || return 1
+  printf '%s' "$value"
+}
+
+suggest_memory() {
+  local total_mb suggested
+  total_mb="$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print int($2/1024)}')"
+  if [ -n "${total_mb:-}" ] && [ "$total_mb" -gt 0 ]; then
+    suggested=$((total_mb / 2))
+    suggested=$(((suggested / 512) * 512))
+    [ "$suggested" -lt 512 ] && suggested=512
+    printf '%sM' "$suggested"
+    return
+  fi
+  printf '1G'
+}
+
+json_get() {
+  local file="$1"
+  local path="$2"
+  [ -f "$file" ] || return 1
+  node -e "const fs=require('fs');const data=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));const path=process.argv[2].split('.');let cur=data;for (const key of path) cur = cur == null ? undefined : cur[key];process.stdout.write(cur == null ? '' : String(cur));" "$file" "$path"
+}
+
+require_termux() {
+  if [ ! -d "/data/data/com.termux" ]; then
+    warn "This does not look like Termux."
+    prompt_yes_no "Continue anyway?" N || exit 1
+  fi
+}
+
+fetch_payload() {
+  section "Stage 1 · Fetching TermuCraft payload"
+  mkdir -p "$TMP_DIR" || die "Could not create staging directory."
+  for file in "${FILES[@]}"; do
+    note "Downloading ${file}"
+    curl -fsSL "$REPO_RAW/$file" -o "$TMP_DIR/$file" || die "Failed to download $file"
+  done
+  ok "Payload staged in $TMP_DIR"
+}
+
+verify_payload() {
+  section "Stage 2 · Verifying payload"
+  if ! command -v sha256sum >/dev/null 2>&1; then
+    warn "sha256sum is unavailable, skipping verification."
+    return
+  fi
   if (
     cd "$TMP_DIR"
     sha256sum -c checksums.sha256 >/dev/null
   ); then
-    log "Downloads verified"
+    ok "Checksum verification passed"
   else
-    warn "Checksum verification failed. Continuing anyway."
+    warn "Checksum verification failed. Review the repo state if this was unexpected."
   fi
-else
-  warn "sha256sum not found, skipping checksum verification"
-fi
+}
 
-step "Installing packages"
+install_runtime() {
+  section "Stage 3 · Installing runtime"
+  pkg update -y >/dev/null || warn "pkg update returned warnings."
+  pkg install -y openjdk-21 nodejs-lts curl openssl-tool git >/dev/null || die "Failed to install the required runtime packages."
+  ok "Java ready: $(java -version 2>&1 | head -1)"
+  ok "Node ready: $(node --version) / npm $(npm --version)"
 
-pkg update -y 2>/dev/null || warn "pkg update reported warnings"
-pkg install -y openjdk-21 nodejs-lts curl openssl-tool >/dev/null || err "Failed to install Java / Node.js / curl / openssl"
-log "Java ready: $(java -version 2>&1 | head -1)"
-log "Node.js $(node --version) / npm $(npm --version)"
-
-if ! command -v tmux >/dev/null 2>&1; then
-  read -r -p "  Install tmux for background sessions? [Y/n]: " dotmux
-  if [[ ! "$dotmux" =~ ^[Nn]$ ]]; then
-    pkg install -y tmux >/dev/null || warn "tmux install failed"
-  fi
-fi
-
-if command -v termux-wake-lock >/dev/null 2>&1; then
-  termux-wake-lock || true
-  log "Wake lock enabled"
-else
-  warn "termux-wake-lock not available. Install Termux:API if you want wake-lock support."
-fi
-
-step "Choosing server memory"
-
-TOTAL_MB="$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print int($2/1024)}')"
-if [ -n "$TOTAL_MB" ] && [ "$TOTAL_MB" -gt 0 ]; then
-  SUGGESTED_MB=$((TOTAL_MB / 2))
-  SUGGESTED_MB=$(((SUGGESTED_MB / 512) * 512))
-  [ "$SUGGESTED_MB" -lt 512 ] && SUGGESTED_MB=512
-  SUGGESTED="${SUGGESTED_MB}M"
-else
-  SUGGESTED="1G"
-fi
-
-read -r -p "  How much RAM for the Minecraft server? [default: $SUGGESTED]: " ram_input
-ram_input="${ram_input:-$SUGGESTED}"
-if [[ "$ram_input" =~ ^[0-9]+[MmGg]$ ]]; then
-  MC_RAM="${ram_input^^}"
-else
-  warn "Invalid format '$ram_input', using $SUGGESTED"
-  MC_RAM="${SUGGESTED^^}"
-fi
-log "Server RAM set to $MC_RAM"
-
-step "Creating panel login"
-
-while :; do
-  read -r -p "  Web panel username: " ADMIN_USER
-  [ -n "$ADMIN_USER" ] && break
-  warn "Username cannot be empty"
-done
-
-while :; do
-  read -r -s -p "  Web panel password: " ADMIN_PASS
-  echo ""
-  read -r -s -p "  Confirm password: " ADMIN_PASS_CONFIRM
-  echo ""
-  [ -n "$ADMIN_PASS" ] || { warn "Password cannot be empty"; continue; }
-  [ "$ADMIN_PASS" = "$ADMIN_PASS_CONFIRM" ] && break
-  warn "Passwords did not match"
-done
-
-ENABLE_HTTPS=0
-HTTPS_PORT="8443"
-HTTPS_CERT_DIR="$UI_DIR/certs"
-HTTPS_CERT_PATH="$HTTPS_CERT_DIR/cert.pem"
-HTTPS_KEY_PATH="$HTTPS_CERT_DIR/key.pem"
-
-step "HTTPS certificate"
-
-read -r -p "  Enable HTTPS for the web panel with a self-signed certificate? [Y/n]: " https_ans
-if [[ ! "$https_ans" =~ ^[Nn]$ ]]; then
-  ENABLE_HTTPS=1
-  read -r -p "  HTTPS port [default: 8443]: " https_port_input
-  HTTPS_PORT="${https_port_input:-8443}"
-fi
-
-step "Installing files"
-
-mkdir -p "$UI_DIR/public" "$UI_DIR/backups" "$MC_DIR"
-cp "$TMP_DIR/server.js" "$UI_DIR/server.js"
-cp "$TMP_DIR/package.json" "$UI_DIR/package.json"
-cp "$TMP_DIR/package-lock.json" "$UI_DIR/package-lock.json"
-cp "$TMP_DIR/index.html" "$UI_DIR/public/index.html"
-cp "$TMP_DIR/style.css" "$UI_DIR/public/style.css"
-cp "$TMP_DIR/app.js" "$UI_DIR/public/app.js"
-cp "$TMP_DIR/Logo.png" "$UI_DIR/public/Logo.png"
-cp "$TMP_DIR/checksums.sha256" "$UI_DIR/.checksums"
-cp "$TMP_DIR/uninstall.sh" "$HOME/uninstall-termucraft.sh"
-chmod +x "$HOME/uninstall-termucraft.sh"
-log "Panel files copied to $UI_DIR"
-
-if [ "$ENABLE_HTTPS" -eq 1 ]; then
-  if ! command -v openssl >/dev/null 2>&1; then
-    warn "OpenSSL is unavailable. Falling back to HTTP."
-    ENABLE_HTTPS=0
+  if ! command -v tmux >/dev/null 2>&1; then
+    if prompt_yes_no "Install tmux for background launchers?" Y; then
+      pkg install -y tmux >/dev/null || warn "tmux install failed."
+    fi
   else
-    mkdir -p "$HTTPS_CERT_DIR"
-    if openssl req -x509 -nodes -newkey rsa:2048 \
-      -keyout "$HTTPS_KEY_PATH" \
-      -out "$HTTPS_CERT_PATH" \
-      -days 3650 \
-      -subj "/CN=TermuCraft" >/dev/null 2>&1; then
-      log "Self-signed HTTPS certificate generated"
-    else
-      warn "Failed to generate HTTPS certificate. Falling back to HTTP."
-      ENABLE_HTTPS=0
+    ok "tmux already available"
+  fi
+
+  if command -v termux-wake-lock >/dev/null 2>&1; then
+    termux-wake-lock || true
+    ok "Wake lock requested"
+  else
+    warn "termux-wake-lock is unavailable. Install Termux:API if you want wake-lock support."
+  fi
+}
+
+collect_install_plan() {
+  KEEP_EXISTING=0
+  SERVER_DIR="$DEFAULT_SERVER_DIR"
+  MC_RAM="$(suggest_memory)"
+  PANEL_PORT="8080"
+  ENABLE_HTTPS=0
+  HTTPS_PORT="8443"
+  HTTPS_CERT_DIR="$UI_DIR/certs"
+  HTTPS_CERT_PATH="$HTTPS_CERT_DIR/cert.pem"
+  HTTPS_KEY_PATH="$HTTPS_CERT_DIR/key.pem"
+
+  section "Stage 4 · Building the install plan"
+
+  if [ -f "$UI_DIR/config.json" ] && [ -f "$UI_DIR/auth.json" ]; then
+    ok "Existing TermuCraft install detected."
+    if prompt_yes_no "Keep the current config and credentials?" Y; then
+      KEEP_EXISTING=1
+      SERVER_DIR="$(json_get "$UI_DIR/config.json" "serverDir" || printf '%s' "$DEFAULT_SERVER_DIR")"
+      MC_RAM="$(json_get "$UI_DIR/config.json" "memory" || printf '%s' "$(suggest_memory)")"
+      PANEL_PORT="$(json_get "$UI_DIR/config.json" "uiPort" || printf '8080')"
+      if [ "$(json_get "$UI_DIR/config.json" "httpsEnabled" || printf 'false')" = "true" ]; then
+        ENABLE_HTTPS=1
+        HTTPS_PORT="$(json_get "$UI_DIR/config.json" "httpsPort" || printf '8443')"
+        HTTPS_CERT_PATH="$(json_get "$UI_DIR/config.json" "httpsCertPath" || printf '%s' "$HTTPS_CERT_PATH")"
+        HTTPS_KEY_PATH="$(json_get "$UI_DIR/config.json" "httpsKeyPath" || printf '%s' "$HTTPS_KEY_PATH")"
+      fi
+      note "Current config will be preserved."
+      return
     fi
   fi
-fi
 
-cat > "$UI_DIR/config.json" <<EOF
+  SERVER_DIR="$(prompt_default "Minecraft server directory" "$DEFAULT_SERVER_DIR")"
+
+  while :; do
+    PANEL_PORT="$(prompt_default "Panel HTTP port" "8080")"
+    normalize_port "$PANEL_PORT" && break
+    warn "Enter a valid port between 1 and 65535."
+  done
+
+  while :; do
+    local_memory="$(prompt_default "Minecraft server RAM" "$(suggest_memory)")"
+    if MC_RAM="$(normalize_memory "$local_memory")"; then
+      break
+    fi
+    warn "Use values like 768M, 1G, or 2G."
+  done
+
+  while :; do
+    ADMIN_USER="$(prompt_default "Panel username" "admin")"
+    [ -n "$ADMIN_USER" ] && break
+    warn "Username cannot be empty."
+  done
+
+  ADMIN_PASS="$(prompt_secret_pair "Panel password" "Confirm password")"
+
+  if prompt_yes_no "Generate a self-signed HTTPS certificate for the panel?" N; then
+    ENABLE_HTTPS=1
+    while :; do
+      HTTPS_PORT="$(prompt_default "Panel HTTPS port" "8443")"
+      normalize_port "$HTTPS_PORT" && break
+      warn "Enter a valid port between 1 and 65535."
+    done
+  fi
+}
+
+write_config() {
+  cat > "$UI_DIR/config.json" <<EOF
 {
   "serverJar": "server.jar",
-  "serverDir": "$MC_DIR",
+  "serverDir": "$SERVER_DIR",
   "memory": "$MC_RAM",
   "javaPath": "java",
-  "uiPort": 8080,
+  "uiPort": $PANEL_PORT,
   "httpsEnabled": $( [ "$ENABLE_HTTPS" -eq 1 ] && echo "true" || echo "false" ),
   "httpsPort": $HTTPS_PORT,
   "httpsCertPath": "$HTTPS_CERT_PATH",
@@ -215,9 +280,10 @@ cat > "$UI_DIR/config.json" <<EOF
   "lastDownloadedChecksumType": ""
 }
 EOF
-log "config.json written"
+}
 
-ADMIN_USER="$ADMIN_USER" ADMIN_PASS="$ADMIN_PASS" node <<'EOF' > "$UI_DIR/auth.json"
+write_auth() {
+  ADMIN_USER="$ADMIN_USER" ADMIN_PASS="$ADMIN_PASS" node <<'EOF' > "$UI_DIR/auth.json"
 const crypto = require('crypto');
 const username = process.env.ADMIN_USER || 'admin';
 const password = process.env.ADMIN_PASS || 'changeme';
@@ -232,67 +298,163 @@ process.stdout.write(JSON.stringify({
   updatedAt: new Date().toISOString(),
 }, null, 2));
 EOF
-log "auth.json written"
+}
 
-echo ""
-echo -e "  ${A}Minecraft End User License Agreement (EULA)${N}"
-echo -e "  ${B}https://aka.ms/MinecraftEULA${N}"
-read -r -p "  Do you accept the Minecraft EULA? [Y/n]: " eula_ans
-if [[ "$eula_ans" =~ ^[Nn]$ ]]; then
-  err "EULA not accepted"
-fi
-echo "eula=true" > "$MC_DIR/eula.txt"
+generate_https_cert() {
+  [ "$ENABLE_HTTPS" -eq 1 ] || return
+  mkdir -p "$HTTPS_CERT_DIR"
+  if openssl req -x509 -nodes -newkey rsa:2048 \
+    -keyout "$HTTPS_KEY_PATH" \
+    -out "$HTTPS_CERT_PATH" \
+    -days 3650 \
+    -subj "/CN=TermuCraft" >/dev/null 2>&1; then
+    ok "Self-signed HTTPS certificate created"
+  else
+    warn "HTTPS certificate generation failed. Falling back to HTTP."
+    ENABLE_HTTPS=0
+    write_config
+  fi
+}
 
-step "Installing Node.js dependencies"
+deploy_payload() {
+  section "Stage 5 · Deploying files"
+  install -d "$UI_DIR/public" "$UI_DIR/backups" "$SERVER_DIR"
+  install -m 0644 "$TMP_DIR/server.js" "$UI_DIR/server.js"
+  install -m 0644 "$TMP_DIR/package.json" "$UI_DIR/package.json"
+  install -m 0644 "$TMP_DIR/package-lock.json" "$UI_DIR/package-lock.json"
+  install -m 0644 "$TMP_DIR/index.html" "$UI_DIR/public/index.html"
+  install -m 0644 "$TMP_DIR/style.css" "$UI_DIR/public/style.css"
+  install -m 0644 "$TMP_DIR/app.js" "$UI_DIR/public/app.js"
+  install -m 0644 "$TMP_DIR/Logo.png" "$UI_DIR/public/Logo.png"
+  install -m 0644 "$TMP_DIR/checksums.sha256" "$UI_DIR/.checksums"
+  install -m 0755 "$TMP_DIR/uninstall.sh" "$HOME/uninstall-termucraft.sh"
+  ok "Application files copied"
 
-cd "$UI_DIR"
-npm ci --omit=dev >/dev/null || err "npm install failed"
-log "Node.js dependencies installed"
+  if [ "$KEEP_EXISTING" -eq 0 ]; then
+    write_config
+    write_auth
+    generate_https_cert
+    ok "Fresh config written"
+  else
+    ok "Existing config kept"
+  fi
+}
 
-echo "$TERMUCRAFT_VERSION" > "$UI_DIR/.version"
-log "Version $TERMUCRAFT_VERSION recorded"
+accept_eula() {
+  section "Stage 6 · Minecraft EULA"
+  if [ -f "$SERVER_DIR/eula.txt" ] && grep -q '^eula=true$' "$SERVER_DIR/eula.txt" 2>/dev/null; then
+    ok "EULA already accepted for $SERVER_DIR"
+    return
+  fi
+  echo -e "  ${Y}Minecraft EULA:${N} https://aka.ms/MinecraftEULA"
+  prompt_yes_no "Do you accept the Minecraft EULA?" Y || die "EULA not accepted."
+  printf 'eula=true\n' > "$SERVER_DIR/eula.txt"
+  ok "eula.txt written"
+}
 
-step "Creating launch scripts"
+install_node_modules() {
+  section "Stage 7 · Installing Node dependencies"
+  (
+    cd "$UI_DIR"
+    npm ci --omit=dev --no-fund --no-audit >/dev/null
+  ) || die "npm install failed."
+  printf '%s\n' "$APP_VERSION" > "$UI_DIR/.version"
+  ok "Dependencies installed"
+}
 
-cat > "$HOME/start-termucraft.sh" <<'EOF'
+write_launchers() {
+  section "Stage 8 · Writing launchers"
+
+  cat > "$HOME/termucraft" <<'EOF'
 #!/data/data/com.termux/files/usr/bin/bash
 UI_DIR="${UI_DIR:-$HOME/TermuCraft}"
 command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock
 cd "$UI_DIR"
 MC_VERBOSE=1 node server.js
 EOF
-chmod +x "$HOME/start-termucraft.sh"
-log "Created ~/start-termucraft.sh"
+  chmod +x "$HOME/termucraft"
 
-if command -v tmux >/dev/null 2>&1; then
-cat > "$HOME/start-termucraft-bg.sh" <<'EOF'
+  cat > "$HOME/start-termucraft.sh" <<'EOF'
+#!/data/data/com.termux/files/usr/bin/bash
+exec "$HOME/termucraft"
+EOF
+  chmod +x "$HOME/start-termucraft.sh"
+
+  if command -v tmux >/dev/null 2>&1; then
+    cat > "$HOME/termucraft-bg" <<'EOF'
 #!/data/data/com.termux/files/usr/bin/bash
 UI_DIR="${UI_DIR:-$HOME/TermuCraft}"
 command -v termux-wake-lock >/dev/null 2>&1 && termux-wake-lock
 if tmux has-session -t termucraft 2>/dev/null; then
   echo ""
-  echo "  TermuCraft is already running."
-  echo "  Re-attach: tmux attach -t termucraft"
+  echo "  TermuCraft is already running in tmux."
+  echo "  Attach with: tmux attach -t termucraft"
   echo ""
 else
-  tmux new-session -d -s termucraft "cd $UI_DIR && MC_VERBOSE=1 node server.js"
+  tmux new-session -d -s termucraft "cd \"$UI_DIR\" && MC_VERBOSE=1 node server.js"
   echo ""
-  echo "  TermuCraft started in background (tmux: termucraft)"
+  echo "  TermuCraft launched in the background."
+  echo "  Attach with: tmux attach -t termucraft"
   echo ""
 fi
 EOF
-  chmod +x "$HOME/start-termucraft-bg.sh"
-  log "Created ~/start-termucraft-bg.sh"
-fi
+    chmod +x "$HOME/termucraft-bg"
 
-echo ""
-echo -e "  ${D}Panel path:${N}      $UI_DIR"
-echo -e "  ${D}Server path:${N}     $MC_DIR"
-echo -e "  ${D}Panel login:${N}     $ADMIN_USER"
-echo -e "  ${D}Foreground:${N}      ~/start-termucraft.sh"
-command -v tmux >/dev/null 2>&1 && echo -e "  ${D}Background:${N}      ~/start-termucraft-bg.sh"
-echo ""
-echo -e "${G}==============================================${N}"
-echo -e "${G}  Setup complete${N}"
-echo -e "${G}==============================================${N}"
-echo ""
+    cat > "$HOME/start-termucraft-bg.sh" <<'EOF'
+#!/data/data/com.termux/files/usr/bin/bash
+exec "$HOME/termucraft-bg"
+EOF
+    chmod +x "$HOME/start-termucraft-bg.sh"
+  fi
+
+  ok "Launchers created"
+}
+
+print_summary() {
+  local http_port https_enabled https_port protocol panel_port launch_fg launch_bg
+  http_port="$(json_get "$UI_DIR/config.json" "uiPort" || printf '8080')"
+  https_enabled="$(json_get "$UI_DIR/config.json" "httpsEnabled" || printf 'false')"
+  https_port="$(json_get "$UI_DIR/config.json" "httpsPort" || printf '8443')"
+  protocol="http"
+  if [ "$https_enabled" = "true" ]; then
+    protocol="https"
+  fi
+  panel_port="$http_port"
+  [ "$https_enabled" = "true" ] && panel_port="$https_port"
+  launch_fg="$HOME/termucraft"
+  launch_bg="$HOME/termucraft-bg"
+
+  section "Ready"
+  echo -e "  ${D}Panel files${N}    $UI_DIR"
+  echo -e "  ${D}Server files${N}   $SERVER_DIR"
+  echo -e "  ${D}HTTP port${N}      $http_port"
+  if [ "$https_enabled" = "true" ]; then
+    echo -e "  ${D}HTTPS port${N}     $https_port"
+  fi
+  echo -e "  ${D}Foreground${N}     $launch_fg"
+  if [ -x "$launch_bg" ]; then
+    echo -e "  ${D}Background${N}     $launch_bg"
+  fi
+  echo ""
+  echo -e "${G}Open the panel at ${protocol}://localhost:${panel_port}${N}"
+  if [ "$https_enabled" = "true" ]; then
+    echo -e "${D}HTTP remains configured on port ${http_port} if you disable HTTPS later.${N}"
+  fi
+  echo ""
+}
+
+main() {
+  banner
+  require_termux
+  fetch_payload
+  verify_payload
+  install_runtime
+  collect_install_plan
+  deploy_payload
+  accept_eula
+  install_node_modules
+  write_launchers
+  print_summary
+}
+
+main "$@"

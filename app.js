@@ -535,7 +535,9 @@ function setTab(name) {
   const ind = $('tabIndicator');
   if (activeBtn && ind) {
     ind.style.left = activeBtn.offsetLeft + 'px';
+    ind.style.top = activeBtn.offsetTop + 'px';
     ind.style.width = activeBtn.offsetWidth + 'px';
+    ind.style.height = activeBtn.offsetHeight + 'px';
   }
 }
 
@@ -1116,16 +1118,29 @@ function initTabIndicator() {
   const ind = $('tabIndicator');
   if (active && ind) {
     ind.style.left = active.offsetLeft + 'px';
+    ind.style.top = active.offsetTop + 'px';
     ind.style.width = active.offsetWidth + 'px';
+    ind.style.height = active.offsetHeight + 'px';
   }
+}
+
+function syncInterfaceCopy() {
+  const dashLinks = document.querySelectorAll('#tab-dash .panel-link');
+  if (dashLinks[0]) dashLinks[0].textContent = 'Open Stream ->';
+  if (dashLinks[1]) dashLinks[1].textContent = 'View Crew ->';
+  if (dashLinks[2]) dashLinks[2].textContent = 'Open Vault ->';
+  const jump = $('jumpLatest');
+  if (jump) jump.textContent = 'Jump to latest';
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
   bindEvents();
+  syncInterfaceCopy();
   initTabIndicator();
   updateMiniConsole();
   renderMiniPlayers();
   renderMiniBackups();
+  window.addEventListener('resize', initTabIndicator);
   const authenticated = await checkAuth();
   if (authenticated) {
     bootstrap().catch((error) => toast(error.message, 'err'));
