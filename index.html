@@ -1,0 +1,685 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+    <title>TermuCraft</title>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div class="login-gate" id="loginGate">
+      <form class="login-card" id="loginForm">
+        <div class="login-kicker">TermuCraft</div>
+        <h1>Panel Login</h1>
+        <p>Use the username and password created on the phone during setup.</p>
+        <label class="login-label" for="loginUsername">Username</label>
+        <input class="inp" id="loginUsername" autocomplete="username" required />
+        <label class="login-label" for="loginPassword">Password</label>
+        <input class="inp" id="loginPassword" type="password" autocomplete="current-password" required />
+        <button class="abtn primary login-btn" type="submit">Login</button>
+        <div class="login-note" id="loginNote"></div>
+      </form>
+    </div>
+
+    <div class="topbar">
+      <div class="server-info">
+        <div class="server-icon">
+          <img src="Logo.png" alt="TermuCraft logo" class="server-logo" />
+        </div>
+        <div class="server-name-wrap">
+          <span class="server-name">Termu<span class="name-em">Craft</span></span>
+          <span id="serverAddr" class="server-addr">localhost:8080</span>
+        </div>
+        <div id="statusBadge" class="status-badge stopped">
+          <div class="badge-dot"></div>
+          <span id="badgeTxt">STOPPED</span>
+        </div>
+      </div>
+
+      <div class="topbar-actions">
+        <div class="stat-chips">
+          <div class="schip hs"><span class="schip-label">CPU</span><span class="schip-val" id="tCpu">-</span></div>
+          <div class="schip hs"><span class="schip-label">RAM</span><span class="schip-val" id="tRam">-</span></div>
+          <div class="schip hs"><span class="schip-label">UP</span><span class="schip-val" id="tUp">-</span></div>
+          <div class="schip"><span class="schip-label">P</span><span class="schip-val green" id="tPl">0</span></div>
+        </div>
+        <button class="hbtn hbtn-primary" id="btnStart">Start</button>
+        <button class="hbtn hbtn-ghost" id="btnStopTop" disabled>Stop</button>
+        <button class="hbtn hbtn-ghost" id="btnRestart" disabled>Restart</button>
+        <button class="hbtn hbtn-danger" id="btnKillTop" disabled>Kill</button>
+        <div class="user-chip">
+          <span id="authUser">guest</span>
+          <button class="icon-btn" id="logoutBtn">Log out</button>
+        </div>
+      </div>
+    </div>
+
+    <nav class="tabnav">
+      <div class="tab-indicator" id="tabIndicator"></div>
+      <button class="tnav active" data-tab-target="dash">Dashboard</button>
+      <button class="tnav" data-tab-target="console">Console</button>
+      <button class="tnav" data-tab-target="players">Players</button>
+      <button class="tnav" data-tab-target="backups">Backups</button>
+      <button class="tnav" data-tab-target="files">Files</button>
+      <button class="tnav" data-tab-target="version">Version</button>
+      <button class="tnav" data-tab-target="properties">Properties</button>
+      <button class="tnav" data-tab-target="mods">Mods</button>
+      <button class="tnav" data-tab-target="plugins">Plugins</button>
+      <button class="tnav" data-tab-target="settings">Settings</button>
+      <button class="tnav" data-tab-target="validation">Validation</button>
+    </nav>
+
+    <div class="main">
+      <section class="tab active" id="tab-dash">
+        <div class="tcontent">
+          <div class="page-heading">
+            <div>
+              <div class="page-title">Dashboard</div>
+              <div class="page-sub">Overview of the panel, server health, and quick actions</div>
+            </div>
+          </div>
+
+          <div class="stat-grid">
+            <div class="stat-card">
+              <div class="stat-card-header"><div class="stat-icon cpu"></div><span class="stat-label">CPU</span></div>
+              <div class="stat-value" id="dCpu">0%</div>
+              <div class="stat-sub" id="cpuSub">of 200% max</div>
+              <div class="stat-bar"><div class="stat-bar-fill cpu" id="cpuBar"></div></div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-card-header"><div class="stat-icon ram"></div><span class="stat-label">Memory</span></div>
+              <div class="stat-value" id="dRam">0 MB</div>
+              <div class="stat-sub" id="ramSub">limit unavailable</div>
+              <div class="stat-bar"><div class="stat-bar-fill ram" id="ramBar"></div></div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-card-header"><div class="stat-icon disk"></div><span class="stat-label">Disk</span></div>
+              <div class="stat-value" id="dDisk">0 B</div>
+              <div class="stat-sub" id="diskSub">storage unavailable</div>
+              <div class="stat-bar"><div class="stat-bar-fill disk" id="diskBar"></div></div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-card-header"><div class="stat-icon uptime"></div><span class="stat-label">Uptime</span></div>
+              <div class="stat-value dim" id="dUp">Offline</div>
+              <div class="stat-sub" id="dStatus">Not currently running</div>
+              <div class="stat-bar"><div class="stat-bar-fill uptime"></div></div>
+            </div>
+          </div>
+
+          <div class="split-grid">
+            <div class="panel">
+              <div class="panel-header-row">
+                <div>
+                  <div class="panel-title">Server Display</div>
+                  <div class="panel-sub">Edit the MOTD stored in server.properties</div>
+                </div>
+                <button class="abtn primary sm" id="saveMotdBtn">Save MOTD</button>
+              </div>
+              <div class="field-group">
+                <div class="field-label">Preview</div>
+                <div class="motd-preview" id="motdPreview">A TermuCraft Minecraft Server</div>
+              </div>
+              <div class="field-group">
+                <div class="field-label">MOTD</div>
+                <textarea class="motd-input" id="motdInput"></textarea>
+              </div>
+              <div class="connect-info">
+                <div class="ci-row"><span class="ci-lbl">LAN IP</span><span class="ci-val" id="ciIP">-</span></div>
+                <div class="ci-row"><span class="ci-lbl">MC Port</span><span class="ci-val" id="ciPort">25565</span></div>
+                <div class="ci-row"><span class="ci-lbl">Type</span><span class="ci-val" id="ciType">-</span></div>
+                <div class="ci-row"><span class="ci-lbl">Version</span><span class="ci-val" id="ciVer">-</span></div>
+              </div>
+            </div>
+
+            <div class="stack-grid">
+              <div class="panel">
+                <div class="panel-title">Server Health</div>
+                <div class="health-box">
+                  <div class="health-row"><span class="health-key">Crash state</span><span class="health-val" id="healthCrash">No crash recorded</span></div>
+                  <div class="health-row"><span class="health-key">Restart</span><span class="health-val" id="healthRestart">No restart pending</span></div>
+                  <div class="health-row"><span class="health-key">Backups</span><span class="health-val" id="healthBackups">0 backups</span></div>
+                  <div class="health-row"><span class="health-key">Checksum</span><span class="health-val" id="healthChecksum">No server jar checksum yet</span></div>
+                </div>
+              </div>
+
+              <div class="panel">
+                <div class="panel-title">Quick Commands</div>
+                <div class="qgrid">
+                  <button class="qbtn" data-command="time set day">Set Day</button>
+                  <button class="qbtn" data-command="time set night">Set Night</button>
+                  <button class="qbtn" data-command="weather clear">Clear Weather</button>
+                  <button class="qbtn" data-command="weather rain">Rain</button>
+                  <button class="qbtn" data-command="save-all">Save World</button>
+                  <button class="qbtn" id="broadcastBtn">Broadcast</button>
+                  <button class="qbtn" data-command="difficulty peaceful">Peaceful</button>
+                  <button class="qbtn" data-command="difficulty normal">Normal</button>
+                  <button class="qbtn" data-command="effect give @a minecraft:instant_health 1 255">Heal All</button>
+                  <button class="qbtn" data-command="effect give @a minecraft:saturation 1 255">Feed All</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+        <div class="dash-live-row">
+          <div class="panel">
+            <div class="panel-header-row">
+              <div>
+                <div class="panel-title">Live Console</div>
+                <div class="panel-sub">Recent server output</div>
+              </div>
+              <button class="panel-link" onclick="setTab('console')">Open Console →</button>
+            </div>
+            <div class="mini-console-feed" id="miniConsole">
+              <div class="empty-mini">No output yet</div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-header-row">
+              <div>
+                <div class="panel-title">Online Players</div>
+                <div class="panel-sub" id="miniPlayerSub">0 online</div>
+              </div>
+              <button class="panel-link" onclick="setTab('players')">View All →</button>
+            </div>
+            <div class="mini-player-grid" id="miniPlayers">
+              <div class="empty-mini">No players online</div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-header-row">
+              <div>
+                <div class="panel-title">Recent Backups</div>
+                <div class="panel-sub">Last 3 snapshots</div>
+              </div>
+              <button class="panel-link" onclick="setTab('backups')">View All →</button>
+            </div>
+            <div class="mini-backup-list" id="miniBackups">
+              <div class="empty-mini">No backups yet</div>
+            </div>
+          </div>
+        </div>
+        </div>
+      </section>
+
+      <section class="tab" id="tab-console">
+        <div class="cwrap">
+          <div class="ctbar">
+            <div class="filter-row">
+              <button class="fchip on" data-filter="all">All</button>
+              <button class="fchip" data-filter="log">Log</button>
+              <button class="fchip" data-filter="system">System</button>
+              <button class="fchip" data-filter="warn">Warn</button>
+              <button class="fchip" data-filter="error">Error</button>
+              <button class="fchip" data-filter="cmd">Cmd</button>
+            </div>
+            <div class="filter-row">
+              <label class="asc-label"><input type="checkbox" id="autoScroll" checked /> Auto-scroll</label>
+              <button class="abtn ghost sm" id="clearConsoleBtn">Clear</button>
+            </div>
+          </div>
+          <button class="jump-latest" id="jumpLatest">↓ Jump to latest</button>
+          <div id="console"></div>
+          <div class="cmdbar">
+            <span class="cpfx">/</span>
+            <input id="cmdi" type="text" placeholder="Enter command..." disabled />
+            <button class="abtn primary sm" id="sendCmdBtn" disabled>Send</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab" id="tab-players">
+        <div class="tcontent">
+          <div class="tab-header-row">
+            <div>
+              <div class="page-title">Players</div>
+              <div class="page-sub" id="plCount">0 online</div>
+            </div>
+            <button class="abtn ghost sm" id="refreshPlayersBtn">Refresh</button>
+          </div>
+          <div id="plList"><div class="empty">No players online</div></div>
+          <div class="admin-grid">
+            <div class="panel">
+              <div class="panel-title">Whitelist</div>
+              <div class="admin-form">
+                <input class="cfg-inp" id="whitelistName" placeholder="Username" />
+                <button class="abtn primary sm" id="addWhitelistBtn">Add</button>
+              </div>
+              <div class="list-body" id="whitelistList"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-title">Operators</div>
+              <div class="admin-form">
+                <input class="cfg-inp" id="opName" placeholder="Username" />
+                <button class="abtn primary sm" id="addOpBtn">Add</button>
+              </div>
+              <div class="list-body" id="opsList"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-title">Bans</div>
+              <div class="admin-form">
+                <input class="cfg-inp" id="banName" placeholder="Username" />
+                <button class="abtn primary sm" id="addBanBtn">Add</button>
+              </div>
+              <div class="list-body" id="bansList"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab" id="tab-backups">
+        <div class="tcontent">
+          <div class="tab-header-row">
+            <div>
+              <div class="page-title">Backups</div>
+              <div class="page-sub">Create, restore, and prune server snapshots</div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="backup-create">
+              <input class="cfg-inp grow" id="backupLabel" placeholder="Optional backup label" />
+              <button class="abtn primary" id="createBackupBtn">Create Backup</button>
+            </div>
+            <div class="panel-sub" id="backupMeta">Retention and scheduled backups are configured in Settings.</div>
+          </div>
+          <div class="panel" style="margin-top: 12px">
+            <div class="panel-title">Available Backups</div>
+            <div class="list-body" id="backupList"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab" id="tab-files">
+        <div class="tcontent">
+          <div class="tab-header-row">
+            <div>
+              <div class="page-title">File Manager</div>
+              <div class="page-sub">Safe editing for core server files and quick visibility into folders</div>
+            </div>
+          </div>
+          <div class="file-shell">
+            <div class="file-list panel">
+              <div class="panel-title">Managed Files</div>
+              <div class="list-body" id="fileList"></div>
+            </div>
+            <div class="file-editor panel">
+              <div class="panel-header-row">
+                <div>
+                  <div class="panel-title" id="fileTitle">Select a file</div>
+                  <div class="panel-sub" id="fileChecksum">Checksum: -</div>
+                </div>
+                <button class="abtn primary sm" id="saveFileBtn">Save File</button>
+              </div>
+              <textarea class="file-textarea" id="fileEditor"></textarea>
+            </div>
+          </div>
+          <div class="admin-grid" style="margin-top: 12px">
+            <div class="panel">
+              <div class="panel-title">Plugins Folder</div>
+              <div class="list-body" id="pluginsFolderList"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-title">Mods Folder</div>
+              <div class="list-body" id="modsFolderList"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-title">Datapacks and Logs</div>
+              <div class="list-body" id="extraFolderList"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab" id="tab-version">
+        <div class="tcontent">
+          <div class="page-heading">
+            <div>
+              <div class="page-title">Server Version</div>
+              <div class="page-sub">Download and verify server software from official sources</div>
+            </div>
+          </div>
+
+          <div class="config-cards">
+            <div class="config-card">
+              <div class="config-card-label">TYPE</div>
+              <div class="config-card-val" id="cfgType">-</div>
+            </div>
+            <div class="config-card">
+              <div class="config-card-label">VERSION</div>
+              <div class="config-card-val" id="cfgVersion">-</div>
+            </div>
+            <div class="config-card">
+              <div class="config-card-label">JAVA</div>
+              <div class="config-card-val" id="cfgJava">-</div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-title">Change Version</div>
+            <div class="panel-sub">A pre-update backup is created automatically before downloads.</div>
+            <div class="vtype" id="versionTypeButtons">
+              <button class="vtb active" data-version-type="paper"><div class="vn">Paper</div><div class="vs">Recommended</div></button>
+              <button class="vtb" data-version-type="purpur"><div class="vn">Purpur</div><div class="vs">Bukkit fork</div></button>
+              <button class="vtb" data-version-type="vanilla"><div class="vn">Vanilla</div><div class="vs">Official</div></button>
+              <button class="vtb" data-version-type="nukkit"><div class="vn">Nukkit</div><div class="vs">Bedrock</div></button>
+              <button class="vtb" data-version-type="fabric"><div class="vn">Fabric</div><div class="vs">Modloader</div></button>
+              <button class="vtb" data-version-type="forge"><div class="vn">Forge</div><div class="vs">Modloader</div></button>
+              <button class="vtb" data-version-type="neoforge"><div class="vn">NeoForge</div><div class="vs">Modloader</div></button>
+              <button class="vtb" data-version-type="quilt"><div class="vn">Quilt</div><div class="vs">Modloader</div></button>
+            </div>
+
+            <div class="ver-grid" style="margin-top: 14px">
+              <div class="field-group">
+                <div class="ver-field-label">Version</div>
+                <select class="sel" id="verSel"><option>Loading...</option></select>
+              </div>
+              <div class="field-group">
+                <div class="ver-field-label">Current jar checksum</div>
+                <div class="motd-preview mono-preview" id="jarChecksum">No checksum recorded</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="dlprog" id="dlProg">
+            <div class="progress-head">
+              <div class="dllabel" id="dlName">Downloading...</div>
+              <div class="dlpct" id="dlPct">0%</div>
+            </div>
+            <div class="pbar"><div class="pbfill" id="pbf"></div></div>
+            <div class="dllabel" id="dlSub"></div>
+          </div>
+
+          <div class="ready-apply-bar">
+            <div>
+              <div class="ready-title">Apply Selected Version</div>
+              <div class="ready-sub">Checksum verification is shown whenever the source exposes hashes.</div>
+            </div>
+            <button class="abtn primary" id="downloadBtn">Download / Install</button>
+          </div>
+
+          <div class="panel" style="margin-top: 14px">
+            <div class="panel-title">Cross-Platform Install</div>
+            <div class="panel-sub">Install Geyser and Floodgate for Java + Bedrock crossplay on Paper or Purpur servers.</div>
+            <div class="ready-apply-bar" style="margin-top: 10px">
+              <div>
+                <div class="ready-title">Geyser + Floodgate</div>
+                <div class="ready-sub">Drops the latest plugin jars into your plugins folder.</div>
+              </div>
+              <button class="abtn primary" id="installCrossplayBtn">Install Crossplay</button>
+            </div>
+          </div>
+
+          <div class="panel" style="margin-top: 14px">
+            <div class="panel-title">Current Server</div>
+            <div class="server-info-grid">
+              <div class="sinfo-row"><span class="sinfo-key">JAR</span><span class="sinfo-val" id="iJar">-</span></div>
+              <div class="sinfo-row"><span class="sinfo-key">DIR</span><span class="sinfo-val" id="iDir">-</span></div>
+              <div class="sinfo-row"><span class="sinfo-key">FOUND</span><span class="sinfo-val" id="iEx">-</span></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab" id="tab-properties">
+        <div class="tcontent">
+          <div class="tab-header-row">
+            <div class="page-title">Server Properties</div>
+            <div class="filter-row">
+              <input class="srch-inp" id="psrch" placeholder="Search properties..." />
+              <button class="abtn primary" id="savePropsBtn">Save All</button>
+            </div>
+          </div>
+          <div id="propsBox"></div>
+        </div>
+      </section>
+
+      <section class="tab" id="tab-mods">
+        <div class="tcontent">
+          <div class="tab-header-row">
+            <div class="page-title">Mods</div>
+            <div class="filter-row">
+              <span class="count-badge" id="modCount">0 mods</span>
+              <button class="abtn ghost sm" id="reloadModsBtn">Reload</button>
+            </div>
+          </div>
+          <div id="modList"><div class="empty">Loading...</div></div>
+          <div class="panel" style="margin-top: 14px">
+            <div class="panel-title">Upload Mod</div>
+            <input type="file" id="modFile" accept=".jar" hidden />
+            <div class="upload-row">
+              <button class="abtn ghost" id="pickModBtn">Select File</button>
+              <span id="modFileName" class="file-name">No file selected</span>
+              <button class="abtn primary" id="uploadModBtn" disabled>Upload</button>
+            </div>
+            <div id="modUploadStatus" class="up-status"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab" id="tab-plugins">
+        <div class="tcontent">
+          <div class="tab-header-row">
+            <div class="page-title">Plugins</div>
+            <div class="filter-row">
+              <span class="count-badge" id="plgCount">0 plugins</span>
+              <button class="abtn ghost sm" id="reloadPluginsBtn">Reload</button>
+            </div>
+          </div>
+          <div id="plgList"><div class="empty">Loading...</div></div>
+          <div class="panel" style="margin-top: 14px">
+            <div class="panel-title">Upload Plugin</div>
+            <input type="file" id="plgFile" accept=".jar" hidden />
+            <div class="upload-row">
+              <button class="abtn ghost" id="pickPlgBtn">Select File</button>
+              <span id="plgFileName" class="file-name">No file selected</span>
+              <button class="abtn primary" id="uploadPlgBtn" disabled>Upload</button>
+            </div>
+            <div id="plgUploadStatus" class="up-status"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab" id="tab-settings">
+        <div class="tcontent">
+          <div class="page-heading">
+            <div>
+              <div class="page-title">Settings</div>
+              <div class="page-sub">Panel config, resource presets, schedules, and auth management</div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-title">Server Config</div>
+            <div class="cfg-grid">
+              <div class="cfg-row">
+                <div class="cfg-lbl">
+                  <div class="cfg-name">RAM Allocation</div>
+                  <div class="cfg-desc">Max JVM heap (1G, 2G, 512M)</div>
+                </div>
+                <input class="cfg-inp" id="sRam" placeholder="1G" />
+              </div>
+              <div class="cfg-row">
+                <div class="cfg-lbl">
+                  <div class="cfg-name">Server JAR</div>
+                  <div class="cfg-desc">Jar filename in the server directory</div>
+                </div>
+                <input class="cfg-inp" id="sJar" placeholder="server.jar" />
+              </div>
+              <div class="cfg-row">
+                <div class="cfg-lbl">
+                  <div class="cfg-name">Server Directory</div>
+                  <div class="cfg-desc">Absolute path to the Minecraft server folder</div>
+                </div>
+                <input class="cfg-inp" id="sDir" placeholder="~/minecraft" />
+              </div>
+              <div class="cfg-row">
+                <div class="cfg-lbl">
+                  <div class="cfg-name">Java Path</div>
+                  <div class="cfg-desc">Binary used to launch the server</div>
+                </div>
+                <input class="cfg-inp" id="sJava" placeholder="java" />
+              </div>
+            </div>
+            <div class="settings-actions">
+              <button class="abtn primary" id="saveSettingsBtn">Save Settings</button>
+            </div>
+          </div>
+
+          <div class="admin-grid" style="margin-top: 12px">
+            <div class="panel">
+              <div class="panel-title">Resource Presets</div>
+              <div class="list-body" id="presetList"></div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-title">Schedules and Recovery</div>
+              <div class="cfg-grid compact-grid">
+                <div class="cfg-row">
+                  <div class="cfg-lbl">
+                    <div class="cfg-name">Auto Restart After Crash</div>
+                    <div class="cfg-desc">Restart the server automatically after a crash</div>
+                  </div>
+                  <input type="checkbox" id="autoRestart" />
+                </div>
+                <div class="cfg-row">
+                  <div class="cfg-lbl">
+                    <div class="cfg-name">Restart Delay</div>
+                    <div class="cfg-desc">Seconds before crash recovery starts</div>
+                  </div>
+                  <input class="cfg-inp" id="autoRestartDelay" placeholder="10" />
+                </div>
+                <div class="cfg-row">
+                  <div class="cfg-lbl">
+                    <div class="cfg-name">Backup Retention</div>
+                    <div class="cfg-desc">How many backups TermuCraft keeps</div>
+                  </div>
+                  <input class="cfg-inp" id="backupRetention" placeholder="5" />
+                </div>
+                <div class="cfg-row">
+                  <div class="cfg-lbl">
+                    <div class="cfg-name">Scheduled Backup</div>
+                    <div class="cfg-desc">Minutes between automatic backups, 0 disables</div>
+                  </div>
+                  <input class="cfg-inp" id="schedBackup" placeholder="0" />
+                </div>
+                <div class="cfg-row">
+                  <div class="cfg-lbl">
+                    <div class="cfg-name">Scheduled Broadcast</div>
+                    <div class="cfg-desc">Minutes between automatic broadcast messages</div>
+                  </div>
+                  <input class="cfg-inp" id="schedBroadcast" placeholder="0" />
+                </div>
+                <div class="cfg-row">
+                  <div class="cfg-lbl">
+                    <div class="cfg-name">Broadcast Text</div>
+                    <div class="cfg-desc">Message sent on the server schedule</div>
+                  </div>
+                  <input class="cfg-inp" id="schedMessage" placeholder="Scheduled notice from TermuCraft." />
+                </div>
+                <div class="cfg-row">
+                  <div class="cfg-lbl">
+                    <div class="cfg-name">Daily Restart</div>
+                    <div class="cfg-desc">HH:MM in device local time, blank disables</div>
+                  </div>
+                  <input class="cfg-inp" id="schedRestart" placeholder="03:00" />
+                </div>
+              </div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-title">Authentication</div>
+              <div class="cfg-grid compact-grid">
+                <div class="cfg-row">
+                  <div class="cfg-lbl">
+                    <div class="cfg-name">Username</div>
+                    <div class="cfg-desc">Current panel username</div>
+                  </div>
+                  <input class="cfg-inp" id="authUsername" />
+                </div>
+                <div class="cfg-row">
+                  <div class="cfg-lbl">
+                    <div class="cfg-name">Current Password</div>
+                    <div class="cfg-desc">Required to change panel auth</div>
+                  </div>
+                  <input class="cfg-inp" id="authCurrentPassword" type="password" />
+                </div>
+                <div class="cfg-row">
+                  <div class="cfg-lbl">
+                    <div class="cfg-name">New Password</div>
+                    <div class="cfg-desc">Minimum 4 characters</div>
+                  </div>
+                  <input class="cfg-inp" id="authNewPassword" type="password" />
+                </div>
+              </div>
+              <div class="settings-actions">
+                <button class="abtn primary" id="saveAuthBtn">Change Credentials</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel" style="margin-top: 12px">
+            <div class="panel-title">Connection Info</div>
+            <div class="tips-list">
+              <div class="tip-row">Panel: <span class="tip-cmd" id="panelLAN">-</span></div>
+              <div class="tip-row">Minecraft: <span class="tip-cmd" id="aLAN">-</span></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab" id="tab-validation">
+        <div class="tcontent">
+          <div class="page-heading">
+            <div>
+              <div class="page-title">Validation</div>
+              <div class="page-sub">Installer and runtime checks for the current device</div>
+            </div>
+          </div>
+
+          <div class="config-cards">
+            <div class="config-card">
+              <div class="config-card-label">JAVA</div>
+              <div class="config-card-val" id="valJava">-</div>
+            </div>
+            <div class="config-card">
+              <div class="config-card-label">NODE</div>
+              <div class="config-card-val" id="valNode">-</div>
+            </div>
+            <div class="config-card">
+              <div class="config-card-label">RAM</div>
+              <div class="config-card-val" id="valRam">-</div>
+            </div>
+          </div>
+
+          <div class="admin-grid" style="margin-top: 12px">
+            <div class="panel">
+              <div class="panel-title">Runtime Summary</div>
+              <div class="list-body" id="validationSummary"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-title">Checks</div>
+              <div class="list-body" id="validationList"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div class="mbg" id="modal">
+      <div class="modal">
+        <div class="mtitle" id="modalTitle">Confirm</div>
+        <div class="mbody" id="modalBody"></div>
+        <div id="modalInputs"></div>
+        <div class="macts">
+          <button class="abtn ghost" id="modalCancelBtn">Cancel</button>
+          <button class="abtn primary" id="modalConfirmBtn">Confirm</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="toast"></div>
+
+    <div class="ws-banner" id="wsBanner"><div class="ws-spinner"></div><span>Reconnecting to server…</span></div>
+    <script src="/app.js"></script>
+  </body>
+</html>

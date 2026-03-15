@@ -84,7 +84,7 @@ The project is expected to stay lightweight and straightforward:
 
 ## Notes
 
-- This project is separate from DroidMC
+- This project is separate from DroidMC and not just a rename
 - The current focus is the free/base experience first
 - The goal is to ship something solid before adding extra complexity
 

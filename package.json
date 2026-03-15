@@ -1,0 +1,22 @@
+{
+  "name": "termucraft",
+  "version": "0.1.0",
+  "description": "TermuCraft - Minecraft Server Panel for Termux",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [
+    "minecraft",
+    "termux",
+    "android",
+    "panel"
+  ],
+  "author": "Mik",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "pidusage": "^3.0.2",
+    "ws": "^8.16.0"
+  }
+}
