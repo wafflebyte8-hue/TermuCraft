@@ -10,6 +10,37 @@
 
 TermuCraft is a web-based Minecraft server panel built for running and managing servers directly from Android through Termux. The goal is to make mobile hosting practical, manageable, and less annoying than doing everything by hand.
 
+## Install
+
+Run this in Termux:
+
+```bash
+pkg update && pkg upgrade -y
+pkg install curl -y
+curl -fsSL https://raw.githubusercontent.com/wafflebyte8-hue/TermuCraft/main/setup.sh -o setup.sh
+chmod +x setup.sh
+./setup.sh
+```
+
+## Start
+
+Foreground:
+
+```bash
+~/start-termucraft.sh
+```
+
+Background with `tmux`:
+
+```bash
+~/start-termucraft-bg.sh
+```
+
+Then open the panel in the browser at:
+
+- `http://localhost:8080`
+- or the LAN address printed by the panel
+
 ## Status
 
 TermuCraft is in early development.
