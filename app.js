@@ -287,31 +287,37 @@ function applyStatus(status) {
 function applyConfig(config) {
   if (!config) return;
   state.config = { ...state.config, ...config };
-  $('sRam').value = state.config.memory || '';
-  $('sJar').value = state.config.serverJar || '';
-  $('sDir').value = state.config.serverDir || '';
-  $('sJava').value = state.config.javaPath || '';
-  $('authUsername').value = $('authUser').textContent === 'guest' ? (state.config.authUsername || '') : $('authUser').textContent;
-  $('autoRestart').checked = !!state.config.autoRestart;
-  $('autoRestartDelay').value = state.config.autoRestartDelaySec ?? 10;
-  $('backupRetention').value = state.config.backupRetention ?? 5;
-  $('schedBackup').value = state.config.scheduleBackupMinutes ?? 0;
-  $('schedBroadcast').value = state.config.scheduleBroadcastMinutes ?? 0;
-  $('schedMessage').value = state.config.scheduleBroadcastMessage || '';
-  $('schedRestart').value = state.config.scheduleRestartTime || '';
-  $('ddnsEnabled').checked = !!state.config.duckDnsEnabled;
-  $('ddnsDomain').value = state.config.duckDnsDomain || '';
-  $('ddnsToken').value = '';
-  $('ddnsToken').placeholder = state.config.duckDnsTokenConfigured ? 'Stored securely. Leave blank to keep.' : 'Paste DuckDNS token';
-  $('ddnsTokenStatus').textContent = state.config.duckDnsTokenConfigured ? 'Stored token is configured' : 'No token saved yet';
-  $('ddnsInterval').value = state.config.duckDnsIntervalMinutes ?? 10;
-  $('cfgType').textContent = state.config.serverType || '-';
-  $('cfgVersion').textContent = state.config.serverVersion || '-';
-  $('cfgJava').textContent = state.validation?.javaVersion || '-';
-  $('ciType').textContent = state.config.serverType || '-';
-  $('ciVer').textContent = state.config.serverVersion || '-';
-  $('iJar').textContent = state.config.serverJar || '-';
-  $('iDir').textContent = state.config.serverDir || '-';
+  if ($('sRam')) $('sRam').value = state.config.memory || '';
+  if ($('sJar')) $('sJar').value = state.config.serverJar || '';
+  if ($('sDir')) $('sDir').value = state.config.serverDir || '';
+  if ($('sJava')) $('sJava').value = state.config.javaPath || '';
+  if ($('authUsername')) $('authUsername').value = $('authUser').textContent === 'guest' ? (state.config.authUsername || '') : $('authUser').textContent;
+  if ($('autoRestart')) $('autoRestart').checked = !!state.config.autoRestart;
+  if ($('autoRestartDelay')) $('autoRestartDelay').value = state.config.autoRestartDelaySec ?? 10;
+  if ($('backupRetention')) $('backupRetention').value = state.config.backupRetention ?? 5;
+  if ($('schedBackup')) $('schedBackup').value = state.config.scheduleBackupMinutes ?? 0;
+  if ($('schedBroadcast')) $('schedBroadcast').value = state.config.scheduleBroadcastMinutes ?? 0;
+  if ($('schedMessage')) $('schedMessage').value = state.config.scheduleBroadcastMessage || '';
+  if ($('schedRestart')) $('schedRestart').value = state.config.scheduleRestartTime || '';
+  if ($('ddnsEnabled')) $('ddnsEnabled').checked = !!state.config.duckDnsEnabled;
+  if ($('ddnsDomain')) $('ddnsDomain').value = state.config.duckDnsDomain || '';
+  if ($('ddnsToken')) {
+    $('ddnsToken').value = '';
+    $('ddnsToken').placeholder = state.config.duckDnsTokenConfigured ? 'Stored securely. Leave blank to keep.' : 'Paste DuckDNS token';
+  }
+  if ($('ddnsTokenStatus')) $('ddnsTokenStatus').textContent = state.config.duckDnsTokenConfigured ? 'Stored token is configured' : 'No token saved yet';
+  if ($('ddnsInterval')) $('ddnsInterval').value = state.config.duckDnsIntervalMinutes ?? 10;
+  if ($('updateDuckDnsBtn')) {
+    $('updateDuckDnsBtn').disabled = !isDuckDnsReady();
+    $('updateDuckDnsBtn').title = isDuckDnsReady() ? '' : 'Save a DuckDNS subdomain and token first';
+  }
+  if ($('cfgType')) $('cfgType').textContent = state.config.serverType || '-';
+  if ($('cfgVersion')) $('cfgVersion').textContent = state.config.serverVersion || '-';
+  if ($('cfgJava')) $('cfgJava').textContent = state.validation?.javaVersion || '-';
+  if ($('ciType')) $('ciType').textContent = state.config.serverType || '-';
+  if ($('ciVer')) $('ciVer').textContent = state.config.serverVersion || '-';
+  if ($('iJar')) $('iJar').textContent = state.config.serverJar || '-';
+  if ($('iDir')) $('iDir').textContent = state.config.serverDir || '-';
   updateStats();
 }
 
@@ -322,16 +328,26 @@ function applyNetwork(network) {
   const port = protocol === 'https'
     ? (state.network.panelSecurePort || state.network.panelPort || location.port || 8443)
     : (state.network.panelPort || location.port || 8080);
-  $('serverAddr').textContent = `${state.network.lanIp || 'localhost'}:${port}`;
-  $('ciIP').textContent = state.network.lanIp || location.hostname;
-  $('ciPort').textContent = state.network.mcPort || '25565';
-  $('panelLAN').textContent = `${protocol}://${state.network.lanIp || location.hostname}:${port}`;
-  $('aLAN').textContent = `${state.network.lanIp || location.hostname}:${state.network.mcPort || '25565'}`;
-  $('panelPublic').textContent = state.network.publicPanelUrl || 'Not configured';
-  $('duckDnsHost').textContent = state.network.duckDnsHost || 'Not configured';
-  $('duckDnsState').textContent = state.network.duckDnsEnabled
-    ? (state.network.duckDnsStatus || 'pending')
-    : 'Disabled';
+  if ($('serverAddr')) $('serverAddr').textContent = `${state.network.lanIp || 'localhost'}:${port}`;
+  if ($('ciIP')) $('ciIP').textContent = state.network.lanIp || location.hostname;
+  if ($('ciPort')) $('ciPort').textContent = state.network.mcPort || '25565';
+  if ($('panelLAN')) $('panelLAN').textContent = `${protocol}://${state.network.lanIp || location.hostname}:${port}`;
+  if ($('aLAN')) $('aLAN').textContent = `${state.network.lanIp || location.hostname}:${state.network.mcPort || '25565'}`;
+  if ($('panelPublic')) $('panelPublic').textContent = state.network.publicPanelUrl || 'Not configured';
+  if ($('duckDnsHost')) $('duckDnsHost').textContent = state.network.duckDnsHost || 'Not configured';
+  if ($('duckDnsState')) {
+    $('duckDnsState').textContent = state.network.duckDnsEnabled
+      ? (state.network.duckDnsStatus || 'pending')
+      : 'Disabled';
+  }
+}
+
+function isDuckDnsReady(config = state.config) {
+  return !!(
+    config?.duckDnsEnabled &&
+    String(config?.duckDnsDomain || '').trim() &&
+    config?.duckDnsTokenConfigured
+  );
 }
 
 function updateUptime(uptime) {
@@ -616,11 +632,11 @@ async function saveSettings() {
     scheduleBroadcastMinutes: $('schedBroadcast').value.trim(),
     scheduleBroadcastMessage: $('schedMessage').value,
     scheduleRestartTime: $('schedRestart').value.trim(),
-    duckDnsEnabled: $('ddnsEnabled').checked,
-    duckDnsDomain: $('ddnsDomain').value.trim(),
-    duckDnsIntervalMinutes: $('ddnsInterval').value.trim(),
   };
-  const typedToken = $('ddnsToken').value.trim();
+  if ($('ddnsEnabled')) payload.duckDnsEnabled = $('ddnsEnabled').checked;
+  if ($('ddnsDomain')) payload.duckDnsDomain = $('ddnsDomain').value.trim();
+  if ($('ddnsInterval')) payload.duckDnsIntervalMinutes = $('ddnsInterval').value.trim();
+  const typedToken = $('ddnsToken') ? $('ddnsToken').value.trim() : '';
   if (typedToken) {
     payload.duckDnsToken = typedToken;
   }
@@ -636,6 +652,10 @@ async function saveSettings() {
 }
 
 async function updateDuckDnsNow() {
+  if (!isDuckDnsReady()) {
+    toast('Save a DuckDNS subdomain and token first', 'info');
+    return;
+  }
   const result = await api('/api/duckdns/update', { method: 'POST' });
   if (result.state?.host) {
     state.network = { ...state.network, duckDnsHost: result.state.host };
