@@ -140,6 +140,27 @@ require_termux() {
   fi
 }
 
+stop_running_instances() {
+  local stopped=0
+
+  if command -v tmux >/dev/null 2>&1 && tmux has-session -t termucraft 2>/dev/null; then
+    tmux kill-session -t termucraft || true
+    stopped=1
+    ok "Stopped existing tmux session: termucraft"
+  fi
+
+  if command -v pkill >/dev/null 2>&1; then
+    if pkill -f "$UI_DIR/server.js" 2>/dev/null; then
+      stopped=1
+      ok "Stopped existing TermuCraft server process"
+    fi
+  fi
+
+  if [ "$stopped" -eq 0 ]; then
+    note "No running TermuCraft instance detected"
+  fi
+}
+
 fetch_payload() {
   section "Stage 1 · Fetching TermuCraft payload"
   mkdir -p "$TMP_DIR" || die "Could not create staging directory."
@@ -331,6 +352,7 @@ generate_https_cert() {
 
 deploy_payload() {
   section "Stage 5 · Deploying files"
+  stop_running_instances
   install -d "$UI_DIR/public" "$UI_DIR/backups" "$SERVER_DIR"
   install -m 0644 "$TMP_DIR/server.js" "$UI_DIR/server.js"
   install -m 0644 "$TMP_DIR/package.json" "$UI_DIR/package.json"
