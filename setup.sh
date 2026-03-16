@@ -105,20 +105,27 @@ prompt_secret_pair() {
   printf '%s' "$first"
 }
 
-verify_written_auth() {
+verify_identity_record() {
   local result
-  result="$(AUTH_FILE="$UI_DIR/auth.json" ADMIN_USER="$ADMIN_USER" ADMIN_PASS="$ADMIN_PASS" node <<'EOF'
+  result="$(ACCESS_FILE="$UI_DIR/identity.json" PANEL_HANDLE="$PANEL_HANDLE" PANEL_SECRET="$PANEL_SECRET" node <<'EOF'
 const fs = require('fs');
 const crypto = require('crypto');
-const authFile = process.env.AUTH_FILE;
-const expectedUser = process.env.ADMIN_USER || '';
-const expectedPass = process.env.ADMIN_PASS || '';
+const accessFile = process.env.ACCESS_FILE;
+const expectedHandle = String(process.env.PANEL_HANDLE || '').trim().toLowerCase();
+const expectedSecret = process.env.PANEL_SECRET || '';
 try {
-  const auth = JSON.parse(fs.readFileSync(authFile, 'utf8'));
-  const usernameOk = String(auth.username || '') === expectedUser;
-  const hash = crypto.scryptSync(expectedPass, auth.salt, 64).toString('hex');
-  const passwordOk = hash === auth.passwordHash;
-  process.stdout.write(usernameOk && passwordOk ? 'ok' : 'bad');
+  const identity = JSON.parse(fs.readFileSync(accessFile, 'utf8'));
+  const handleOk = String(identity.profile?.handle || '') === expectedHandle;
+  const secret = identity.secret || {};
+  const verifier = crypto.pbkdf2Sync(
+    expectedSecret,
+    Buffer.from(secret.salt || '', 'base64'),
+    Number(secret.rounds || 210000),
+    Number(secret.bytes || 48),
+    secret.digest || 'sha512'
+  ).toString('base64');
+  const secretOk = verifier === String(secret.verifier || '');
+  process.stdout.write(handleOk && secretOk ? 'ok' : 'bad');
 } catch {
   process.stdout.write('bad');
 }
@@ -247,12 +254,12 @@ collect_install_plan() {
   HTTPS_CERT_DIR="$UI_DIR/certs"
   HTTPS_CERT_PATH="$HTTPS_CERT_DIR/cert.pem"
   HTTPS_KEY_PATH="$HTTPS_CERT_DIR/key.pem"
-  ADMIN_USER="admin"
-  ADMIN_PASS=""
+  PANEL_HANDLE="admin"
+  PANEL_SECRET=""
 
   section "Stage 4 · Building the install plan"
 
-  if [ -f "$UI_DIR/config.json" ] && [ -f "$UI_DIR/auth.json" ]; then
+  if [ -f "$UI_DIR/config.json" ] && [ -f "$UI_DIR/identity.json" ]; then
     ok "Existing TermuCraft install detected."
     if prompt_yes_no "Keep the current panel config?" Y; then
       KEEP_EXISTING_CONFIG=1
@@ -268,12 +275,12 @@ collect_install_plan() {
       note "Current config will be preserved."
     fi
 
-    if prompt_yes_no "Keep the current panel login?" Y; then
+    if prompt_yes_no "Keep the current panel identity?" Y; then
       KEEP_EXISTING_AUTH=1
-      ADMIN_USER="$(json_get "$UI_DIR/auth.json" "username" || printf 'admin')"
-      note "Current login will be preserved for user: $ADMIN_USER"
+      PANEL_HANDLE="$(json_get "$UI_DIR/identity.json" "profile.handle" || printf 'admin')"
+      note "Current identity will be preserved for handle: $PANEL_HANDLE"
     else
-      note "A new panel login will be written."
+      note "A new panel identity will be written."
     fi
   fi
 
@@ -306,12 +313,13 @@ collect_install_plan() {
 
   if [ "$KEEP_EXISTING_AUTH" -eq 0 ]; then
     while :; do
-      ADMIN_USER="$(prompt_default "Panel username" "$ADMIN_USER")"
-      [ -n "$ADMIN_USER" ] && break
-      warn "Username cannot be empty."
+      PANEL_HANDLE="$(prompt_default "Panel handle" "$PANEL_HANDLE")"
+      PANEL_HANDLE="${PANEL_HANDLE,,}"
+      [ -n "$PANEL_HANDLE" ] && break
+      warn "Handle cannot be empty."
     done
 
-    ADMIN_PASS="$(prompt_secret_pair "Panel password" "Confirm password")"
+    PANEL_SECRET="$(prompt_secret_pair "Panel passphrase" "Confirm passphrase")"
   fi
 }
 
@@ -344,20 +352,34 @@ write_config() {
 EOF
 }
 
-write_auth() {
-  ADMIN_USER="$ADMIN_USER" ADMIN_PASS="$ADMIN_PASS" node <<'EOF' > "$UI_DIR/auth.json"
+write_identity_record() {
+  PANEL_HANDLE="$PANEL_HANDLE" PANEL_SECRET="$PANEL_SECRET" node <<'EOF' > "$UI_DIR/identity.json"
 const crypto = require('crypto');
-const username = process.env.ADMIN_USER || 'admin';
-const password = process.env.ADMIN_PASS || 'changeme';
-const salt = crypto.randomBytes(16).toString('hex');
-const passwordHash = crypto.scryptSync(password, salt, 64).toString('hex');
+const handle = String(process.env.PANEL_HANDLE || 'admin').trim().toLowerCase();
+const passphrase = process.env.PANEL_SECRET || 'changeme';
+const now = new Date().toISOString();
+const salt = crypto.randomBytes(24);
+const verifier = crypto.pbkdf2Sync(passphrase, salt, 210000, 48, 'sha512');
 process.stdout.write(JSON.stringify({
+  version: 1,
   authRequired: true,
-  username,
-  salt,
-  passwordHash,
-  bootstrap: false,
-  updatedAt: new Date().toISOString(),
+  profile: {
+    handle,
+    createdAt: now,
+    updatedAt: now,
+  },
+  secret: {
+    scheme: 'pbkdf2-sha512',
+    rounds: 210000,
+    bytes: 48,
+    digest: 'sha512',
+    salt: salt.toString('base64'),
+    verifier: verifier.toString('base64'),
+  },
+  flags: {
+    bootstrap: false,
+  },
+  updatedAt: now,
 }, null, 2));
 EOF
 }
@@ -402,12 +424,13 @@ deploy_payload() {
   fi
 
   if [ "$KEEP_EXISTING_AUTH" -eq 0 ]; then
-    note "Debug: captured panel password length = ${#ADMIN_PASS}"
-    write_auth
-    verify_written_auth || die "auth.json verification failed. The written panel login does not match the password you entered."
-    ok "Panel login written for user: $ADMIN_USER"
+    note "Debug: captured panel passphrase length = ${#PANEL_SECRET}"
+    write_identity_record
+    rm -f "$UI_DIR/auth.json"
+    verify_identity_record || die "identity.json verification failed. The written panel identity does not match the passphrase you entered."
+    ok "Panel identity written for handle: $PANEL_HANDLE"
   else
-    ok "Existing panel login kept for user: $ADMIN_USER"
+    ok "Existing panel identity kept for handle: $PANEL_HANDLE"
   fi
 }
 
@@ -482,11 +505,11 @@ EOF
 }
 
 print_summary() {
-  local http_port https_enabled https_port protocol panel_port launch_fg launch_bg summary_user
+  local http_port https_enabled https_port protocol panel_port launch_fg launch_bg summary_handle
   http_port="$(json_get "$UI_DIR/config.json" "uiPort" || printf '8080')"
   https_enabled="$(json_get "$UI_DIR/config.json" "httpsEnabled" || printf 'false')"
   https_port="$(json_get "$UI_DIR/config.json" "httpsPort" || printf '8443')"
-  summary_user="$(json_get "$UI_DIR/auth.json" "username" || printf 'admin')"
+  summary_handle="$(json_get "$UI_DIR/identity.json" "profile.handle" || printf 'admin')"
   protocol="http"
   if [ "$https_enabled" = "true" ]; then
     protocol="https"
@@ -499,7 +522,7 @@ print_summary() {
   section "Ready"
   echo -e "  ${D}Panel files${N}    $UI_DIR"
   echo -e "  ${D}Server files${N}   $SERVER_DIR"
-  echo -e "  ${D}Panel login${N}    $summary_user"
+  echo -e "  ${D}Panel handle${N}   $summary_handle"
   echo -e "  ${D}HTTP port${N}      $http_port"
   if [ "$https_enabled" = "true" ]; then
     echo -e "  ${D}HTTPS port${N}     $https_port"

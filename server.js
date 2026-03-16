@@ -26,7 +26,7 @@ const STATIC_DIR = fs.existsSync(path.join(__dirname, 'public'))
   ? path.join(__dirname, 'public')
   : __dirname;
 const CONFIG_FILE = path.join(UI_DIR, 'config.json');
-const AUTH_FILE = path.join(UI_DIR, 'auth.json');
+const ACCESS_FILE = path.join(UI_DIR, 'identity.json');
 const INTEGRITY_FILE = path.join(UI_DIR, 'integrity.json');
 const BACKUP_DIR = path.join(UI_DIR, 'backups');
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -110,7 +110,7 @@ const MANAGED_TEXT_FILES = [
 const app = express();
 
 let CONFIG = loadConfig();
-let AUTH = loadAuth();
+let ACCESS = loadAccess();
 let INTEGRITY = loadIntegrity();
 let sessions = new Map();
 let mcProcess = null;
@@ -184,23 +184,49 @@ function writeJsonFile(filePath, value) {
   fs.writeFileSync(filePath, JSON.stringify(value, null, 2));
 }
 
-function hashPassword(password, salt) {
-  return crypto.scryptSync(password, salt, 64).toString('hex');
-}
+const ACCESS_PBKDF2_DIGEST = 'sha512';
+const ACCESS_PBKDF2_ROUNDS = 210000;
+const ACCESS_PBKDF2_BYTES = 48;
 
-function normalizeUsername(value) {
+function normalizeHandle(value) {
   return String(value || '').trim().toLowerCase();
 }
 
-function buildBootstrapAuth() {
-  const salt = crypto.randomBytes(16).toString('hex');
-  return {
-    authRequired: true,
-    username: 'admin',
+function createSecretEnvelope(password) {
+  const salt = crypto.randomBytes(24);
+  const verifier = crypto.pbkdf2Sync(
+    String(password || ''),
     salt,
-    passwordHash: hashPassword('changeme', salt),
-    bootstrap: true,
-    updatedAt: new Date().toISOString(),
+    ACCESS_PBKDF2_ROUNDS,
+    ACCESS_PBKDF2_BYTES,
+    ACCESS_PBKDF2_DIGEST,
+  );
+  return {
+    scheme: 'pbkdf2-sha512',
+    rounds: ACCESS_PBKDF2_ROUNDS,
+    bytes: ACCESS_PBKDF2_BYTES,
+    digest: ACCESS_PBKDF2_DIGEST,
+    salt: salt.toString('base64'),
+    verifier: verifier.toString('base64'),
+  };
+}
+
+function buildAccessRecord(handle = 'admin', password = 'changeme', bootstrap = true) {
+  const normalizedHandle = normalizeHandle(handle) || 'admin';
+  const now = new Date().toISOString();
+  return {
+    version: 1,
+    authRequired: true,
+    profile: {
+      handle: normalizedHandle,
+      createdAt: now,
+      updatedAt: now,
+    },
+    secret: createSecretEnvelope(password),
+    flags: {
+      bootstrap: !!bootstrap,
+    },
+    updatedAt: now,
   };
 }
 
@@ -212,25 +238,44 @@ function saveConfig() {
   writeJsonFile(CONFIG_FILE, CONFIG);
 }
 
-function loadAuth() {
-  const current = readJsonFile(AUTH_FILE, null);
-  if (current && current.salt && current.passwordHash) {
+function loadAccess() {
+  const current = readJsonFile(ACCESS_FILE, null);
+  if (
+    current
+    && current.secret
+    && current.secret.salt
+    && current.secret.verifier
+  ) {
+    const handle = normalizeHandle(current.profile?.handle || current.username || 'admin') || 'admin';
     return {
-      authRequired: true,
-      username: current.username || 'admin',
-      salt: current.salt,
-      passwordHash: current.passwordHash,
-      bootstrap: !!current.bootstrap,
+      version: Number(current.version || 1) || 1,
+      authRequired: current.authRequired !== false,
+      profile: {
+        handle,
+        createdAt: current.profile?.createdAt || current.updatedAt || new Date().toISOString(),
+        updatedAt: current.profile?.updatedAt || current.updatedAt || new Date().toISOString(),
+      },
+      secret: {
+        scheme: current.secret.scheme || 'pbkdf2-sha512',
+        rounds: Number(current.secret.rounds || ACCESS_PBKDF2_ROUNDS) || ACCESS_PBKDF2_ROUNDS,
+        bytes: Number(current.secret.bytes || ACCESS_PBKDF2_BYTES) || ACCESS_PBKDF2_BYTES,
+        digest: current.secret.digest || ACCESS_PBKDF2_DIGEST,
+        salt: current.secret.salt,
+        verifier: current.secret.verifier,
+      },
+      flags: {
+        bootstrap: !!current.flags?.bootstrap,
+      },
       updatedAt: current.updatedAt || new Date().toISOString(),
     };
   }
-  const bootstrap = buildBootstrapAuth();
-  writeJsonFile(AUTH_FILE, bootstrap);
+  const bootstrap = buildAccessRecord();
+  writeJsonFile(ACCESS_FILE, bootstrap);
   return bootstrap;
 }
 
-function saveAuth() {
-  writeJsonFile(AUTH_FILE, AUTH);
+function saveAccess() {
+  writeJsonFile(ACCESS_FILE, ACCESS);
 }
 
 function loadIntegrity() {
@@ -295,7 +340,7 @@ function clearSessionCookie(res) {
 }
 
 function requireAuth(req, res, next) {
-  if (!AUTH.authRequired) {
+  if (!ACCESS.authRequired) {
     next();
     return;
   }
@@ -308,24 +353,32 @@ function requireAuth(req, res, next) {
   next();
 }
 
-function verifyPassword(username, password) {
-  if (normalizeUsername(username) !== normalizeUsername(AUTH.username)) {
+function verifyAccess(handle, password) {
+  ACCESS = loadAccess();
+  if (normalizeHandle(handle) !== ACCESS.profile.handle) {
     return false;
   }
-  return hashPassword(String(password || ''), AUTH.salt) === AUTH.passwordHash;
+  const stored = Buffer.from(ACCESS.secret.verifier, 'base64');
+  const derived = crypto.pbkdf2Sync(
+    String(password || ''),
+    Buffer.from(ACCESS.secret.salt, 'base64'),
+    ACCESS.secret.rounds,
+    ACCESS.secret.bytes,
+    ACCESS.secret.digest,
+  );
+  if (stored.length !== derived.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(stored, derived);
 }
 
-function setCredentials(username, password, bootstrap = false) {
-  const salt = crypto.randomBytes(16).toString('hex');
-  AUTH = {
-    authRequired: true,
-    username: String(username || '').trim(),
-    salt,
-    passwordHash: hashPassword(String(password || ''), salt),
-    bootstrap,
-    updatedAt: new Date().toISOString(),
-  };
-  saveAuth();
+function setAccess(handle, password, bootstrap = false) {
+  const existingCreatedAt = ACCESS?.profile?.createdAt || new Date().toISOString();
+  ACCESS = buildAccessRecord(handle, password, bootstrap);
+  ACCESS.profile.createdAt = existingCreatedAt;
+  ACCESS.profile.updatedAt = new Date().toISOString();
+  ACCESS.updatedAt = ACCESS.profile.updatedAt;
+  saveAccess();
 }
 
 function commandExists(command) {
@@ -1028,7 +1081,7 @@ async function addAdminEntry(type, payload) {
       uuid: profile.uuid,
       name: profile.name,
       created: new Date().toISOString(),
-      source: AUTH.username || 'TermuCraft',
+      source: ACCESS.profile.handle || 'termucraft',
       expires: 'forever',
       reason: String(payload.reason || 'Banned by admin'),
     };
@@ -1135,8 +1188,8 @@ function collectValidation() {
     },
     {
       label: 'Panel auth',
-      ok: !!AUTH.username && !!AUTH.passwordHash,
-      detail: AUTH.bootstrap ? 'Bootstrap credentials still active' : `Configured for ${AUTH.username}`,
+      ok: !!ACCESS.profile?.handle && !!ACCESS.secret?.verifier,
+      detail: ACCESS.flags?.bootstrap ? 'Bootstrap credentials still active' : `Configured for ${ACCESS.profile.handle}`,
     },
     {
       label: 'Wake lock command',
@@ -1163,7 +1216,7 @@ function collectValidation() {
     suggestedRamMB: Math.max(512, Math.floor(totalRamMB / 2 / 512) * 512),
     network: getNetworkInfo(),
     backupCount: listBackups().length,
-    authBootstrap: !!AUTH.bootstrap,
+    authBootstrap: !!ACCESS.flags?.bootstrap,
     checks,
     lastCrash: crashState,
   };
@@ -1834,23 +1887,24 @@ app.use((error, req, res, next) => {
 app.get('/api/auth/status', (req, res) => {
   const session = getSessionFromRequest(req);
   res.json({
-    authenticated: !AUTH.authRequired || !!session,
+    authenticated: !ACCESS.authRequired || !!session,
     username: session ? session.username : null,
-    authRequired: AUTH.authRequired,
-    bootstrap: !!AUTH.bootstrap,
+    handle: session ? session.username : null,
+    authRequired: ACCESS.authRequired,
+    bootstrap: !!ACCESS.flags?.bootstrap,
   });
 });
 
 app.post('/api/auth/login', (req, res) => {
-  const username = String(req.body?.username || '').trim();
-  const password = String(req.body?.password || '');
-  if (!verifyPassword(username, password)) {
+  const handle = String(req.body?.handle || req.body?.username || '').trim();
+  const secret = String(req.body?.secret || req.body?.password || '');
+  if (!verifyAccess(handle, secret)) {
     res.status(401).json({ error: 'Invalid username or password' });
     return;
   }
-  const token = createSession(AUTH.username);
+  const token = createSession(ACCESS.profile.handle);
   setSessionCookie(res, token);
-  res.json({ ok: true, username: AUTH.username, bootstrap: !!AUTH.bootstrap });
+  res.json({ ok: true, username: ACCESS.profile.handle, handle: ACCESS.profile.handle, bootstrap: !!ACCESS.flags?.bootstrap });
 });
 
 app.post('/api/auth/logout', (req, res) => {
@@ -1863,25 +1917,25 @@ app.post('/api/auth/logout', (req, res) => {
 });
 
 app.post('/api/auth/change', requireAuth, (req, res) => {
-  const currentPassword = String(req.body?.currentPassword || '');
-  const username = String(req.body?.username || '').trim();
-  const newPassword = String(req.body?.newPassword || '');
-  if (!verifyPassword(AUTH.username, currentPassword)) {
+  const currentSecret = String(req.body?.currentSecret || req.body?.currentPassword || '');
+  const handle = String(req.body?.handle || req.body?.username || '').trim();
+  const nextSecret = String(req.body?.nextSecret || req.body?.newPassword || '');
+  if (!verifyAccess(ACCESS.profile.handle, currentSecret)) {
     res.status(400).json({ error: 'Current password is incorrect' });
     return;
   }
-  if (!username) {
+  if (!handle) {
     res.status(400).json({ error: 'Username is required' });
     return;
   }
-  if (newPassword.length < 4) {
+  if (nextSecret.length < 4) {
     res.status(400).json({ error: 'New password must be at least 4 characters' });
     return;
   }
-  setCredentials(username, newPassword, false);
-  const token = createSession(username);
+  setAccess(handle, nextSecret, false);
+  const token = createSession(ACCESS.profile.handle);
   setSessionCookie(res, token);
-  res.json({ ok: true, username });
+  res.json({ ok: true, username: ACCESS.profile.handle, handle: ACCESS.profile.handle });
 });
 
 app.use('/api', requireAuth);
@@ -2422,7 +2476,7 @@ server = panelServer.instance;
 wss = new WebSocketServer({ server });
 
 wss.on('connection', (socket, req) => {
-  if (AUTH.authRequired && !getSessionFromRequest(req)) {
+  if (ACCESS.authRequired && !getSessionFromRequest(req)) {
     socket.close(4001, 'auth');
     return;
   }

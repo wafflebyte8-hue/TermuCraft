@@ -18,9 +18,9 @@
             <p>Use the panel account created during setup to open the control deck.</p>
           </div>
         </div>
-        <label class="login-label" for="loginUsername">Username</label>
+        <label class="login-label" for="loginUsername">Handle</label>
         <input class="inp" id="loginUsername" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false" required />
-        <label class="login-label" for="loginPassword">Password</label>
+        <label class="login-label" for="loginPassword">Passphrase</label>
         <input class="inp" id="loginPassword" type="password" autocomplete="current-password" required />
         <button class="abtn primary login-btn" type="submit">Login</button>
         <div class="login-note" id="loginNote"></div>
@@ -616,28 +616,28 @@
               <div class="cfg-grid compact-grid">
                 <div class="cfg-row">
                   <div class="cfg-lbl">
-                    <div class="cfg-name">Username</div>
-                    <div class="cfg-desc">Current panel username</div>
+                      <div class="cfg-name">Handle</div>
+                      <div class="cfg-desc">Current panel handle</div>
                   </div>
                   <input class="cfg-inp" id="authUsername" autocapitalize="off" autocorrect="off" spellcheck="false" />
                 </div>
                 <div class="cfg-row">
                   <div class="cfg-lbl">
-                    <div class="cfg-name">Current Password</div>
-                    <div class="cfg-desc">Required to change panel auth</div>
+                      <div class="cfg-name">Current Passphrase</div>
+                      <div class="cfg-desc">Required to rotate the panel identity</div>
                   </div>
                   <input class="cfg-inp" id="authCurrentPassword" type="password" />
                 </div>
                 <div class="cfg-row">
                   <div class="cfg-lbl">
-                    <div class="cfg-name">New Password</div>
-                    <div class="cfg-desc">Minimum 4 characters</div>
+                      <div class="cfg-name">New Passphrase</div>
+                      <div class="cfg-desc">Minimum 4 characters</div>
                   </div>
                   <input class="cfg-inp" id="authNewPassword" type="password" />
                 </div>
               </div>
               <div class="settings-actions">
-                <button class="abtn primary" id="saveAuthBtn">Change Credentials</button>
+                <button class="abtn primary" id="saveAuthBtn">Rotate Identity</button>
               </div>
             </div>
           </div>

@@ -51,7 +51,7 @@ function $(id) {
   return document.getElementById(id);
 }
 
-function normalizeUsername(value) {
+function normalizeHandle(value) {
   return String(value || '').trim().toLowerCase();
 }
 
@@ -115,8 +115,9 @@ function showLogin(show, note = '') {
 
 async function checkAuth() {
   const status = await fetch('/api/auth/status').then((res) => res.json());
-  $('authUser').textContent = status.username || 'guest';
-  $('authUsername').value = status.username || '';
+  const handle = status.handle || status.username || '';
+  $('authUser').textContent = handle || 'guest';
+  $('authUsername').value = handle;
   if (status.authenticated) {
     showLogin(false);
     if (status.bootstrap) {
@@ -130,12 +131,13 @@ async function checkAuth() {
 
 async function login(event) {
   event.preventDefault();
-  const username = normalizeUsername($('loginUsername').value);
-  const password = $('loginPassword').value;
+  const handle = normalizeHandle($('loginUsername').value);
+  const secret = $('loginPassword').value;
   try {
-    const result = await api('/api/auth/login', { method: 'POST', body: { username, password } });
-    $('authUser').textContent = result.username;
-    $('authUsername').value = result.username;
+    const result = await api('/api/auth/login', { method: 'POST', body: { handle, secret } });
+    const resolvedHandle = result.handle || result.username;
+    $('authUser').textContent = resolvedHandle;
+    $('authUsername').value = resolvedHandle;
     $('loginPassword').value = '';
     showLogin(false);
     await bootstrap();
@@ -586,14 +588,14 @@ async function saveSettings() {
 }
 
 async function saveAuth() {
-  const username = normalizeUsername($('authUsername').value);
-  const currentPassword = $('authCurrentPassword').value;
-  const newPassword = $('authNewPassword').value;
+  const handle = normalizeHandle($('authUsername').value);
+  const currentSecret = $('authCurrentPassword').value;
+  const nextSecret = $('authNewPassword').value;
   const result = await api('/api/auth/change', {
     method: 'POST',
-    body: { username, currentPassword, newPassword },
+    body: { handle, currentSecret, nextSecret },
   });
-  $('authUser').textContent = result.username;
+  $('authUser').textContent = result.handle || result.username;
   $('authCurrentPassword').value = '';
   $('authNewPassword').value = '';
   toast('Credentials updated', 'ok');
