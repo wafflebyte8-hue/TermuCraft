@@ -341,11 +341,10 @@ EOF
 }
 
 write_auth() {
-  printf '%s\n%s\n' "$ADMIN_USER" "$ADMIN_PASS" | node <<'EOF' > "$UI_DIR/auth.json"
+  node - "$ADMIN_USER" "$ADMIN_PASS" <<'EOF' > "$UI_DIR/auth.json"
 const crypto = require('crypto');
-const input = require('fs').readFileSync(0, 'utf8').split('\n');
-const username = input[0] || 'admin';
-const password = input[1] || 'changeme';
+const username = process.argv[2] || 'admin';
+const password = process.argv[3] || 'changeme';
 const salt = crypto.randomBytes(16).toString('hex');
 const passwordHash = crypto.scryptSync(password, salt, 64).toString('hex');
 process.stdout.write(JSON.stringify({
