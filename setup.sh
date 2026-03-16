@@ -38,6 +38,11 @@ ok()   { echo -e "${G}[ok]${N} $1"; }
 note() { echo -e "${C}[..]${N} $1"; }
 warn() { echo -e "${Y}[!]${N} $1"; }
 die()  { echo -e "${R}[x]${N} $1"; exit 1; }
+
+line() {
+  printf '%b\n' "${D}------------------------------------------------------------${N}"
+}
+
 banner() {
   clear
   echo ""
