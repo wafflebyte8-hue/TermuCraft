@@ -4,7 +4,7 @@
 set -euo pipefail
 
 APP_NAME="TermuCraft"
-APP_VERSION="0.1.0"
+APP_VERSION="0.2.0"
 REPO_RAW="https://raw.githubusercontent.com/wafflebyte8-hue/TermuCraft/main"
 UI_DIR="$HOME/TermuCraft"
 DEFAULT_SERVER_DIR="$HOME/termucraft-server"
