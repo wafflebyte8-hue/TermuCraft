@@ -287,11 +287,13 @@ function applyStatus(status) {
 function applyConfig(config) {
   if (!config) return;
   state.config = { ...state.config, ...config };
+  const authUserNode = $('authUser');
+  const authUserLabel = authUserNode?.textContent || 'guest';
   if ($('sRam')) $('sRam').value = state.config.memory || '';
   if ($('sJar')) $('sJar').value = state.config.serverJar || '';
   if ($('sDir')) $('sDir').value = state.config.serverDir || '';
   if ($('sJava')) $('sJava').value = state.config.javaPath || '';
-  if ($('authUsername')) $('authUsername').value = $('authUser').textContent === 'guest' ? (state.config.authUsername || '') : $('authUser').textContent;
+  if ($('authUsername')) $('authUsername').value = authUserLabel === 'guest' ? (state.config.authUsername || '') : authUserLabel;
   if ($('autoRestart')) $('autoRestart').checked = !!state.config.autoRestart;
   if ($('autoRestartDelay')) $('autoRestartDelay').value = state.config.autoRestartDelaySec ?? 10;
   if ($('backupRetention')) $('backupRetention').value = state.config.backupRetention ?? 5;
