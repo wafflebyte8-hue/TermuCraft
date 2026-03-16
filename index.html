@@ -631,9 +631,16 @@
                 <div class="cfg-row">
                   <div class="cfg-lbl">
                     <div class="cfg-name">DuckDNS Token</div>
-                    <div class="cfg-desc">API token from your DuckDNS dashboard</div>
+                    <div class="cfg-desc">API token from DuckDNS. Never share it. Leave blank to keep the current token.</div>
                   </div>
-                  <input class="cfg-inp" id="ddnsToken" type="password" placeholder="token" />
+                  <input class="cfg-inp" id="ddnsToken" type="password" placeholder="Paste DuckDNS token" autocomplete="new-password" />
+                </div>
+                <div class="cfg-row">
+                  <div class="cfg-lbl">
+                    <div class="cfg-name">Token Storage</div>
+                    <div class="cfg-desc">TermuCraft no longer sends the saved token back to the browser.</div>
+                  </div>
+                  <div class="tip-cmd" id="ddnsTokenStatus">No token saved yet</div>
                 </div>
                 <div class="cfg-row">
                   <div class="cfg-lbl">

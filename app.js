@@ -301,7 +301,9 @@ function applyConfig(config) {
   $('schedRestart').value = state.config.scheduleRestartTime || '';
   $('ddnsEnabled').checked = !!state.config.duckDnsEnabled;
   $('ddnsDomain').value = state.config.duckDnsDomain || '';
-  $('ddnsToken').value = state.config.duckDnsToken || '';
+  $('ddnsToken').value = '';
+  $('ddnsToken').placeholder = state.config.duckDnsTokenConfigured ? 'Stored securely. Leave blank to keep.' : 'Paste DuckDNS token';
+  $('ddnsTokenStatus').textContent = state.config.duckDnsTokenConfigured ? 'Stored token is configured' : 'No token saved yet';
   $('ddnsInterval').value = state.config.duckDnsIntervalMinutes ?? 10;
   $('cfgType').textContent = state.config.serverType || '-';
   $('cfgVersion').textContent = state.config.serverVersion || '-';
@@ -602,25 +604,29 @@ async function serverAction(action) {
 }
 
 async function saveSettings() {
+  const payload = {
+    memory: $('sRam').value.trim(),
+    serverJar: $('sJar').value.trim(),
+    serverDir: $('sDir').value.trim(),
+    javaPath: $('sJava').value.trim(),
+    autoRestart: $('autoRestart').checked,
+    autoRestartDelaySec: $('autoRestartDelay').value.trim(),
+    backupRetention: $('backupRetention').value.trim(),
+    scheduleBackupMinutes: $('schedBackup').value.trim(),
+    scheduleBroadcastMinutes: $('schedBroadcast').value.trim(),
+    scheduleBroadcastMessage: $('schedMessage').value,
+    scheduleRestartTime: $('schedRestart').value.trim(),
+    duckDnsEnabled: $('ddnsEnabled').checked,
+    duckDnsDomain: $('ddnsDomain').value.trim(),
+    duckDnsIntervalMinutes: $('ddnsInterval').value.trim(),
+  };
+  const typedToken = $('ddnsToken').value.trim();
+  if (typedToken) {
+    payload.duckDnsToken = typedToken;
+  }
   const config = await api('/api/config', {
     method: 'POST',
-    body: {
-      memory: $('sRam').value.trim(),
-      serverJar: $('sJar').value.trim(),
-      serverDir: $('sDir').value.trim(),
-      javaPath: $('sJava').value.trim(),
-      autoRestart: $('autoRestart').checked,
-      autoRestartDelaySec: $('autoRestartDelay').value.trim(),
-      backupRetention: $('backupRetention').value.trim(),
-      scheduleBackupMinutes: $('schedBackup').value.trim(),
-      scheduleBroadcastMinutes: $('schedBroadcast').value.trim(),
-      scheduleBroadcastMessage: $('schedMessage').value,
-      scheduleRestartTime: $('schedRestart').value.trim(),
-      duckDnsEnabled: $('ddnsEnabled').checked,
-      duckDnsDomain: $('ddnsDomain').value.trim(),
-      duckDnsToken: $('ddnsToken').value.trim(),
-      duckDnsIntervalMinutes: $('ddnsInterval').value.trim(),
-    },
+    body: payload,
   });
   applyConfig(config.config);
   await loadStatus();

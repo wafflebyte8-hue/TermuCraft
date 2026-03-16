@@ -270,6 +270,14 @@ function saveConfig() {
   writeJsonFile(CONFIG_FILE, CONFIG);
 }
 
+function getPublicConfig() {
+  const { duckDnsToken, ...rest } = CONFIG;
+  return {
+    ...rest,
+    duckDnsTokenConfigured: !!String(duckDnsToken || '').trim(),
+  };
+}
+
 function loadAccess() {
   if (!AUTH_FEATURE_ENABLED) {
     return buildOpenAccessRecord();
@@ -949,7 +957,7 @@ function appendCrashLog(reason, code, signal) {
 function buildStatusPayload() {
   return {
     running: !!mcProcess,
-    config: CONFIG,
+    config: getPublicConfig(),
     uptime: getUptime(),
     players: Object.values(onlinePlayers),
     jarExists: fs.existsSync(path.join(CONFIG.serverDir, CONFIG.serverJar)),
@@ -1311,10 +1319,10 @@ function applyPreset(name) {
   CONFIG.memory = preset.memory;
   saveConfig();
   writeProperties(preset.properties);
-  broadcast({ type: 'config', config: CONFIG });
+  broadcast({ type: 'config', config: getPublicConfig() });
   return {
     preset: name,
-    config: CONFIG,
+    config: getPublicConfig(),
     properties: readProperties(),
   };
 }
@@ -1758,7 +1766,7 @@ async function performServerDownload(type, version) {
   downloadState.done = true;
   downloadState.checksum = integrity.sha256 || null;
   broadcast({ type: 'download', ...downloadState });
-  broadcast({ type: 'config', config: CONFIG });
+  broadcast({ type: 'config', config: getPublicConfig() });
   broadcast({ type: 'jarReady' });
 }
 
@@ -1808,7 +1816,7 @@ async function performInstallerDownload(type, version) {
     downloadState.done = true;
     downloadState.checksum = integrity ? integrity.sha256 : null;
     broadcast({ type: 'download', ...downloadState });
-    broadcast({ type: 'config', config: CONFIG });
+    broadcast({ type: 'config', config: getPublicConfig() });
     broadcast({ type: 'jarReady' });
     return;
   }
@@ -1855,7 +1863,7 @@ async function performInstallerDownload(type, version) {
     downloadState.done = true;
     downloadState.checksum = integrity ? integrity.sha256 : null;
     broadcast({ type: 'download', ...downloadState });
-    broadcast({ type: 'config', config: CONFIG });
+    broadcast({ type: 'config', config: getPublicConfig() });
     broadcast({ type: 'jarReady' });
     return;
   }
@@ -1910,7 +1918,7 @@ async function performInstallerDownload(type, version) {
     downloadState.done = true;
     downloadState.checksum = integrity ? integrity.sha256 : null;
     broadcast({ type: 'download', ...downloadState });
-    broadcast({ type: 'config', config: CONFIG });
+    broadcast({ type: 'config', config: getPublicConfig() });
     broadcast({ type: 'jarReady' });
     return;
   }
@@ -1955,7 +1963,7 @@ async function performInstallerDownload(type, version) {
     downloadState.done = true;
     downloadState.checksum = integrity ? integrity.sha256 : null;
     broadcast({ type: 'download', ...downloadState });
-    broadcast({ type: 'config', config: CONFIG });
+    broadcast({ type: 'config', config: getPublicConfig() });
     broadcast({ type: 'jarReady' });
     return;
   }
@@ -2232,7 +2240,7 @@ app.post('/api/list', (req, res) => {
 });
 
 app.get('/api/config', (req, res) => {
-  res.json(CONFIG);
+  res.json(getPublicConfig());
 });
 
 app.post('/api/config', async (req, res) => {
@@ -2300,7 +2308,10 @@ app.post('/api/config', async (req, res) => {
     nextConfig.duckDnsDomain = normalizeDuckDnsDomain(req.body.duckDnsDomain);
   }
   if (Object.prototype.hasOwnProperty.call(req.body || {}, 'duckDnsToken')) {
-    nextConfig.duckDnsToken = String(req.body.duckDnsToken || '').trim();
+    const nextToken = String(req.body.duckDnsToken || '').trim();
+    if (nextToken) {
+      nextConfig.duckDnsToken = nextToken;
+    }
   }
   if (Object.prototype.hasOwnProperty.call(req.body || {}, 'duckDnsIntervalMinutes')) {
     nextConfig.duckDnsIntervalMinutes = Math.max(5, Number.parseInt(req.body.duckDnsIntervalMinutes, 10) || 10);
@@ -2313,9 +2324,9 @@ app.post('/api/config', async (req, res) => {
     await maybeRunDuckDnsUpdate();
   }
   updateSystemStats();
-  broadcast({ type: 'config', config: CONFIG });
+  broadcast({ type: 'config', config: getPublicConfig() });
   broadcast({ type: 'status', ...buildStatusPayload() });
-  res.json({ ok: true, config: CONFIG });
+  res.json({ ok: true, config: getPublicConfig() });
 });
 
 app.post('/api/duckdns/update', async (req, res) => {
@@ -2705,7 +2716,7 @@ wss.on('connection', (socket, req) => {
 
   socket.send(JSON.stringify({ type: 'history', logs: logHistory }));
   socket.send(JSON.stringify({ type: 'status', ...buildStatusPayload() }));
-  socket.send(JSON.stringify({ type: 'config', config: CONFIG }));
+  socket.send(JSON.stringify({ type: 'config', config: getPublicConfig() }));
   socket.send(JSON.stringify({ type: 'stats', ...systemStats }));
   if (downloadState) {
     socket.send(JSON.stringify({ type: 'download', ...downloadState }));
