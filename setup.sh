@@ -4,7 +4,7 @@
 set -euo pipefail
 
 APP_NAME="TermuCraft"
-APP_VERSION="0.2.2"
+APP_VERSION="0.2.3"
 REPO_RAW="https://raw.githubusercontent.com/wafflebyte8-hue/TermuCraft/main"
 UI_DIR="$HOME/TermuCraft"
 DEFAULT_SERVER_DIR="$HOME/termucraft-server"
@@ -68,6 +68,8 @@ prompt_default() {
   local default="$2"
   local answer=""
   read -r -p "  ${label} [${default}]: " answer
+  answer="${answer//$'\r'/}"
+  default="${default//$'\r'/}"
   printf '%s' "${answer:-$default}"
 }
 
@@ -94,6 +96,8 @@ prompt_secret_pair() {
     echo ""
     read -r -s -p "  ${second_label}: " second
     echo ""
+    first="${first//$'\r'/}"
+    second="${second//$'\r'/}"
     [ -n "$first" ] || { warn "Password cannot be empty."; continue; }
     [ "$first" = "$second" ] && break
     warn "Passwords did not match."
@@ -398,6 +402,7 @@ deploy_payload() {
   fi
 
   if [ "$KEEP_EXISTING_AUTH" -eq 0 ]; then
+    note "Debug: captured panel password length = ${#ADMIN_PASS}"
     write_auth
     verify_written_auth || die "auth.json verification failed. The written panel login does not match the password you entered."
     ok "Panel login written for user: $ADMIN_USER"
