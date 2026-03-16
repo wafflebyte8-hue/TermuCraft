@@ -188,6 +188,10 @@ function hashPassword(password, salt) {
   return crypto.scryptSync(password, salt, 64).toString('hex');
 }
 
+function normalizeUsername(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
 function buildBootstrapAuth() {
   const salt = crypto.randomBytes(16).toString('hex');
   return {
@@ -305,7 +309,7 @@ function requireAuth(req, res, next) {
 }
 
 function verifyPassword(username, password) {
-  if (String(username || '').trim() !== AUTH.username) {
+  if (normalizeUsername(username) !== normalizeUsername(AUTH.username)) {
     return false;
   }
   return hashPassword(String(password || ''), AUTH.salt) === AUTH.passwordHash;
@@ -1844,9 +1848,9 @@ app.post('/api/auth/login', (req, res) => {
     res.status(401).json({ error: 'Invalid username or password' });
     return;
   }
-  const token = createSession(username);
+  const token = createSession(AUTH.username);
   setSessionCookie(res, token);
-  res.json({ ok: true, username, bootstrap: !!AUTH.bootstrap });
+  res.json({ ok: true, username: AUTH.username, bootstrap: !!AUTH.bootstrap });
 });
 
 app.post('/api/auth/logout', (req, res) => {

@@ -51,6 +51,10 @@ function $(id) {
   return document.getElementById(id);
 }
 
+function normalizeUsername(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
 function esc(value) {
   return String(value || '')
     .replace(/&/g, '&amp;')
@@ -126,7 +130,7 @@ async function checkAuth() {
 
 async function login(event) {
   event.preventDefault();
-  const username = $('loginUsername').value.trim();
+  const username = normalizeUsername($('loginUsername').value);
   const password = $('loginPassword').value;
   try {
     const result = await api('/api/auth/login', { method: 'POST', body: { username, password } });
@@ -582,7 +586,7 @@ async function saveSettings() {
 }
 
 async function saveAuth() {
-  const username = $('authUsername').value.trim();
+  const username = normalizeUsername($('authUsername').value);
   const currentPassword = $('authCurrentPassword').value;
   const newPassword = $('authNewPassword').value;
   const result = await api('/api/auth/change', {
