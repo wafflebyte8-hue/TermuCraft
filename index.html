@@ -612,32 +612,39 @@
             </div>
 
             <div class="panel">
-              <div class="panel-title">Authentication</div>
+              <div class="panel-title">DuckDNS</div>
               <div class="cfg-grid compact-grid">
                 <div class="cfg-row">
                   <div class="cfg-lbl">
-                      <div class="cfg-name">Handle</div>
-                      <div class="cfg-desc">Current panel handle</div>
+                    <div class="cfg-name">Enable DuckDNS</div>
+                    <div class="cfg-desc">Keep a `something.duckdns.org` host pointed at your current public IP</div>
                   </div>
-                  <input class="cfg-inp" id="authUsername" autocapitalize="off" autocorrect="off" spellcheck="false" />
+                  <input type="checkbox" id="ddnsEnabled" />
                 </div>
                 <div class="cfg-row">
                   <div class="cfg-lbl">
-                      <div class="cfg-name">Current Passphrase</div>
-                      <div class="cfg-desc">Required to rotate the panel identity</div>
+                    <div class="cfg-name">DuckDNS Subdomain</div>
+                    <div class="cfg-desc">Enter only the subdomain part, like `myserver`</div>
                   </div>
-                  <input class="cfg-inp" id="authCurrentPassword" type="password" />
+                  <input class="cfg-inp" id="ddnsDomain" placeholder="myserver" autocapitalize="off" autocorrect="off" spellcheck="false" />
                 </div>
                 <div class="cfg-row">
                   <div class="cfg-lbl">
-                      <div class="cfg-name">New Passphrase</div>
-                      <div class="cfg-desc">Minimum 4 characters</div>
+                    <div class="cfg-name">DuckDNS Token</div>
+                    <div class="cfg-desc">API token from your DuckDNS dashboard</div>
                   </div>
-                  <input class="cfg-inp" id="authNewPassword" type="password" />
+                  <input class="cfg-inp" id="ddnsToken" type="password" placeholder="token" />
+                </div>
+                <div class="cfg-row">
+                  <div class="cfg-lbl">
+                    <div class="cfg-name">Update Interval</div>
+                    <div class="cfg-desc">Minutes between automatic refreshes, minimum 5</div>
+                  </div>
+                  <input class="cfg-inp" id="ddnsInterval" placeholder="10" />
                 </div>
               </div>
               <div class="settings-actions">
-                <button class="abtn primary" id="saveAuthBtn">Rotate Identity</button>
+                <button class="abtn ghost" id="updateDuckDnsBtn">Update Now</button>
               </div>
             </div>
           </div>
@@ -646,7 +653,10 @@
             <div class="panel-title">Connection Info</div>
             <div class="tips-list">
               <div class="tip-row">Panel: <span class="tip-cmd" id="panelLAN">-</span></div>
+              <div class="tip-row">Public Panel: <span class="tip-cmd" id="panelPublic">Not configured</span></div>
               <div class="tip-row">Minecraft: <span class="tip-cmd" id="aLAN">-</span></div>
+              <div class="tip-row">DuckDNS Host: <span class="tip-cmd" id="duckDnsHost">Not configured</span></div>
+              <div class="tip-row">DuckDNS Status: <span class="tip-cmd" id="duckDnsState">Disabled</span></div>
             </div>
           </div>
         </div>

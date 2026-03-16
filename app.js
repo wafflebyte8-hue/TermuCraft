@@ -299,6 +299,10 @@ function applyConfig(config) {
   $('schedBroadcast').value = state.config.scheduleBroadcastMinutes ?? 0;
   $('schedMessage').value = state.config.scheduleBroadcastMessage || '';
   $('schedRestart').value = state.config.scheduleRestartTime || '';
+  $('ddnsEnabled').checked = !!state.config.duckDnsEnabled;
+  $('ddnsDomain').value = state.config.duckDnsDomain || '';
+  $('ddnsToken').value = state.config.duckDnsToken || '';
+  $('ddnsInterval').value = state.config.duckDnsIntervalMinutes ?? 10;
   $('cfgType').textContent = state.config.serverType || '-';
   $('cfgVersion').textContent = state.config.serverVersion || '-';
   $('cfgJava').textContent = state.validation?.javaVersion || '-';
@@ -321,6 +325,11 @@ function applyNetwork(network) {
   $('ciPort').textContent = state.network.mcPort || '25565';
   $('panelLAN').textContent = `${protocol}://${state.network.lanIp || location.hostname}:${port}`;
   $('aLAN').textContent = `${state.network.lanIp || location.hostname}:${state.network.mcPort || '25565'}`;
+  $('panelPublic').textContent = state.network.publicPanelUrl || 'Not configured';
+  $('duckDnsHost').textContent = state.network.duckDnsHost || 'Not configured';
+  $('duckDnsState').textContent = state.network.duckDnsEnabled
+    ? (state.network.duckDnsStatus || 'pending')
+    : 'Disabled';
 }
 
 function updateUptime(uptime) {
@@ -607,12 +616,27 @@ async function saveSettings() {
       scheduleBroadcastMinutes: $('schedBroadcast').value.trim(),
       scheduleBroadcastMessage: $('schedMessage').value,
       scheduleRestartTime: $('schedRestart').value.trim(),
+      duckDnsEnabled: $('ddnsEnabled').checked,
+      duckDnsDomain: $('ddnsDomain').value.trim(),
+      duckDnsToken: $('ddnsToken').value.trim(),
+      duckDnsIntervalMinutes: $('ddnsInterval').value.trim(),
     },
   });
   applyConfig(config.config);
+  await loadStatus();
   renderBackups();
   toast('Settings saved', 'ok');
   showBtnSuccess($('saveSettingsBtn'));
+}
+
+async function updateDuckDnsNow() {
+  const result = await api('/api/duckdns/update', { method: 'POST' });
+  if (result.state?.host) {
+    state.network = { ...state.network, duckDnsHost: result.state.host };
+  }
+  await loadStatus();
+  toast(result.state?.lastError ? `DuckDNS error: ${result.state.lastError}` : 'DuckDNS updated', result.state?.lastError ? 'err' : 'ok');
+  showBtnSuccess($('updateDuckDnsBtn'));
 }
 
 async function saveAuth() {
@@ -920,7 +944,8 @@ function bindEvents() {
     if (value) sendCommand(`say ${value}`).catch((error) => toast(error.message, 'err'));
   });
   $('saveSettingsBtn').addEventListener('click', () => saveSettings().catch((error) => toast(error.message, 'err')));
-  $('saveAuthBtn').addEventListener('click', () => saveAuth().catch((error) => toast(error.message, 'err')));
+  $('updateDuckDnsBtn')?.addEventListener('click', () => updateDuckDnsNow().catch((error) => toast(error.message, 'err')));
+  $('saveAuthBtn')?.addEventListener('click', () => saveAuth().catch((error) => toast(error.message, 'err')));
   $('saveMotdBtn').addEventListener('click', () => saveMotd().catch((error) => toast(error.message, 'err')));
   $('savePropsBtn').addEventListener('click', () => saveProperties().catch((error) => toast(error.message, 'err')));
   $('createBackupBtn').addEventListener('click', () => createBackup().catch((error) => toast(error.message, 'err')));
