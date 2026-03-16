@@ -91,9 +91,16 @@ function toast(message, type = 'ok') {
   }, 2600);
 }
 
+function showShell(show) {
+  const shell = $('appShell');
+  if (!shell) return;
+  shell.classList.toggle('app-shell-hidden', !show);
+}
+
 function showLogin(show, note = '') {
   $('loginGate').classList.toggle('visible', show);
   $('loginNote').textContent = note;
+  showShell(!show);
   if (show) {
     if (state.ws) {
       state.ws.close();
