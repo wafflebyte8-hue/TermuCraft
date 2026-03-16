@@ -31,6 +31,7 @@ const INTEGRITY_FILE = path.join(UI_DIR, 'integrity.json');
 const BACKUP_DIR = path.join(UI_DIR, 'backups');
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const LOG_HISTORY_LIMIT = 3000;
+const AUTH_FEATURE_ENABLED = false;
 
 const CONFIG_DEFAULTS = {
   serverJar: process.env.MC_JAR || 'server.jar',
@@ -216,7 +217,7 @@ function buildAccessRecord(handle = 'admin', password = 'changeme', bootstrap = 
   const now = new Date().toISOString();
   return {
     version: 1,
-    authRequired: true,
+    authRequired: AUTH_FEATURE_ENABLED,
     profile: {
       handle: normalizedHandle,
       createdAt: now,
@@ -225,6 +226,24 @@ function buildAccessRecord(handle = 'admin', password = 'changeme', bootstrap = 
     secret: createSecretEnvelope(password),
     flags: {
       bootstrap: !!bootstrap,
+    },
+    updatedAt: now,
+  };
+}
+
+function buildOpenAccessRecord() {
+  const now = new Date().toISOString();
+  return {
+    version: 1,
+    authRequired: false,
+    profile: {
+      handle: 'local',
+      createdAt: now,
+      updatedAt: now,
+    },
+    secret: null,
+    flags: {
+      bootstrap: false,
     },
     updatedAt: now,
   };
@@ -239,6 +258,9 @@ function saveConfig() {
 }
 
 function loadAccess() {
+  if (!AUTH_FEATURE_ENABLED) {
+    return buildOpenAccessRecord();
+  }
   const current = readJsonFile(ACCESS_FILE, null);
   if (
     current
@@ -249,7 +271,7 @@ function loadAccess() {
     const handle = normalizeHandle(current.profile?.handle || current.username || 'admin') || 'admin';
     return {
       version: Number(current.version || 1) || 1,
-      authRequired: current.authRequired !== false,
+      authRequired: AUTH_FEATURE_ENABLED ? current.authRequired !== false : false,
       profile: {
         handle,
         createdAt: current.profile?.createdAt || current.updatedAt || new Date().toISOString(),
@@ -264,7 +286,7 @@ function loadAccess() {
         verifier: current.secret.verifier,
       },
       flags: {
-        bootstrap: !!current.flags?.bootstrap,
+        bootstrap: AUTH_FEATURE_ENABLED ? !!current.flags?.bootstrap : false,
       },
       updatedAt: current.updatedAt || new Date().toISOString(),
     };
@@ -275,6 +297,9 @@ function loadAccess() {
 }
 
 function saveAccess() {
+  if (!AUTH_FEATURE_ENABLED) {
+    return;
+  }
   writeJsonFile(ACCESS_FILE, ACCESS);
 }
 
@@ -354,6 +379,9 @@ function requireAuth(req, res, next) {
 }
 
 function verifyAccess(handle, password) {
+  if (!AUTH_FEATURE_ENABLED) {
+    return true;
+  }
   ACCESS = loadAccess();
   if (normalizeHandle(handle) !== ACCESS.profile.handle) {
     return false;
@@ -373,6 +401,10 @@ function verifyAccess(handle, password) {
 }
 
 function setAccess(handle, password, bootstrap = false) {
+  if (!AUTH_FEATURE_ENABLED) {
+    ACCESS = buildOpenAccessRecord();
+    return;
+  }
   const existingCreatedAt = ACCESS?.profile?.createdAt || new Date().toISOString();
   ACCESS = buildAccessRecord(handle, password, bootstrap);
   ACCESS.profile.createdAt = existingCreatedAt;
@@ -1186,11 +1218,11 @@ function collectValidation() {
       ok: fs.existsSync(path.join(CONFIG.serverDir, CONFIG.serverJar)),
       detail: path.join(CONFIG.serverDir, CONFIG.serverJar),
     },
-    {
-      label: 'Panel auth',
-      ok: !!ACCESS.profile?.handle && !!ACCESS.secret?.verifier,
-      detail: ACCESS.flags?.bootstrap ? 'Bootstrap credentials still active' : `Configured for ${ACCESS.profile.handle}`,
-    },
+      {
+        label: 'Panel auth',
+        ok: true,
+        detail: ACCESS.authRequired ? (ACCESS.flags?.bootstrap ? 'Bootstrap credentials still active' : `Configured for ${ACCESS.profile.handle}`) : 'Disabled in this build',
+      },
     {
       label: 'Wake lock command',
       ok: commandExists('termux-wake-lock'),
@@ -1887,15 +1919,19 @@ app.use((error, req, res, next) => {
 app.get('/api/auth/status', (req, res) => {
   const session = getSessionFromRequest(req);
   res.json({
-    authenticated: !ACCESS.authRequired || !!session,
-    username: session ? session.username : null,
-    handle: session ? session.username : null,
-    authRequired: ACCESS.authRequired,
-    bootstrap: !!ACCESS.flags?.bootstrap,
+    authenticated: true,
+    username: ACCESS.profile.handle,
+    handle: ACCESS.profile.handle,
+    authRequired: false,
+    bootstrap: false,
   });
 });
 
 app.post('/api/auth/login', (req, res) => {
+  if (!AUTH_FEATURE_ENABLED) {
+    res.json({ ok: true, disabled: true, username: ACCESS.profile.handle, handle: ACCESS.profile.handle, bootstrap: false });
+    return;
+  }
   const handle = String(req.body?.handle || req.body?.username || '').trim();
   const secret = String(req.body?.secret || req.body?.password || '');
   if (!verifyAccess(handle, secret)) {
@@ -1908,6 +1944,10 @@ app.post('/api/auth/login', (req, res) => {
 });
 
 app.post('/api/auth/logout', (req, res) => {
+  if (!AUTH_FEATURE_ENABLED) {
+    res.json({ ok: true, disabled: true });
+    return;
+  }
   const session = getSessionFromRequest(req);
   if (session) {
     sessions.delete(session.token);
@@ -1917,6 +1957,10 @@ app.post('/api/auth/logout', (req, res) => {
 });
 
 app.post('/api/auth/change', requireAuth, (req, res) => {
+  if (!AUTH_FEATURE_ENABLED) {
+    res.json({ ok: true, disabled: true, username: ACCESS.profile.handle, handle: ACCESS.profile.handle });
+    return;
+  }
   const currentSecret = String(req.body?.currentSecret || req.body?.currentPassword || '');
   const handle = String(req.body?.handle || req.body?.username || '').trim();
   const nextSecret = String(req.body?.nextSecret || req.body?.newPassword || '');

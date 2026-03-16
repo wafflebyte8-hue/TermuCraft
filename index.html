@@ -8,7 +8,7 @@
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
-    <div class="login-gate" id="loginGate">
+    <div class="login-gate" id="loginGate" hidden>
       <form class="login-card" id="loginForm">
         <div class="login-head">
           <img src="Logo.png" alt="TermuCraft logo" class="login-logo" />
@@ -66,8 +66,8 @@
 
         <div class="rail-foot">
           <div class="user-chip">
-            <span id="authUser">guest</span>
-            <button class="icon-btn" id="logoutBtn">Log out</button>
+              <span id="authUser">local</span>
+              <button class="icon-btn" id="logoutBtn" hidden>Log out</button>
           </div>
           <div class="rail-note">Termu-first server management with a cleaner control surface.</div>
         </div>
@@ -158,7 +158,7 @@
             </div>
 
             <div class="stack-grid">
-              <div class="panel">
+              <div class="panel" id="authPanel" hidden>
                 <div class="panel-title">Runtime State</div>
                 <div class="health-box">
                   <div class="health-row"><span class="health-key">Crash state</span><span class="health-val" id="healthCrash">No crash recorded</span></div>

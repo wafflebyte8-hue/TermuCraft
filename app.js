@@ -22,6 +22,8 @@ const state = {
   integrity: {},
 };
 
+const AUTH_DISABLED = true;
+
 async function api(path, options = {}) {
   const init = { ...options, headers: { ...(options.headers || {}) } };
   if (init.body && typeof init.body !== 'string') {
@@ -101,7 +103,19 @@ function showShell(show) {
   shell.classList.toggle('app-shell-hidden', !show);
 }
 
+function disableAuthUI() {
+  $('loginGate')?.setAttribute('hidden', '');
+  $('logoutBtn')?.setAttribute('hidden', '');
+  $('authPanel')?.setAttribute('hidden', '');
+  $('authUser').textContent = 'local';
+}
+
 function showLogin(show, note = '') {
+  if (AUTH_DISABLED) {
+    disableAuthUI();
+    showShell(true);
+    return;
+  }
   $('loginGate').classList.toggle('visible', show);
   $('loginNote').textContent = note;
   showShell(!show);
@@ -114,6 +128,11 @@ function showLogin(show, note = '') {
 }
 
 async function checkAuth() {
+  if (AUTH_DISABLED) {
+    disableAuthUI();
+    showLogin(false);
+    return true;
+  }
   const status = await fetch('/api/auth/status').then((res) => res.json());
   const handle = status.handle || status.username || '';
   $('authUser').textContent = handle || 'guest';
@@ -130,6 +149,11 @@ async function checkAuth() {
 }
 
 async function login(event) {
+  if (AUTH_DISABLED) {
+    event.preventDefault();
+    showLogin(false);
+    return;
+  }
   event.preventDefault();
   const handle = normalizeHandle($('loginUsername').value);
   const secret = $('loginPassword').value;
@@ -152,6 +176,10 @@ async function login(event) {
 }
 
 async function logout() {
+  if (AUTH_DISABLED) {
+    toast('Auth is disabled in this build.', 'info');
+    return;
+  }
   try {
     await api('/api/auth/logout', { method: 'POST' });
   } catch {
@@ -588,6 +616,10 @@ async function saveSettings() {
 }
 
 async function saveAuth() {
+  if (AUTH_DISABLED) {
+    toast('Panel auth is disabled for now.', 'info');
+    return;
+  }
   const handle = normalizeHandle($('authUsername').value);
   const currentSecret = $('authCurrentPassword').value;
   const nextSecret = $('authNewPassword').value;
@@ -598,7 +630,7 @@ async function saveAuth() {
   $('authUser').textContent = result.handle || result.username;
   $('authCurrentPassword').value = '';
   $('authNewPassword').value = '';
-  toast('Credentials updated', 'ok');
+  toast('Identity updated', 'ok');
   showBtnSuccess($('saveAuthBtn'));
 }
 
@@ -1147,6 +1179,7 @@ function syncInterfaceCopy() {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
+  disableAuthUI();
   bindEvents();
   syncInterfaceCopy();
   initTabIndicator();

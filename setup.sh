@@ -4,7 +4,7 @@
 set -euo pipefail
 
 APP_NAME="TermuCraft"
-APP_VERSION="0.2.3"
+APP_VERSION="0.2.4"
 REPO_RAW="https://raw.githubusercontent.com/wafflebyte8-hue/TermuCraft/main"
 UI_DIR="$HOME/TermuCraft"
 DEFAULT_SERVER_DIR="$HOME/termucraft-server"
@@ -245,7 +245,6 @@ install_runtime() {
 
 collect_install_plan() {
   KEEP_EXISTING_CONFIG=0
-  KEEP_EXISTING_AUTH=0
   SERVER_DIR="$DEFAULT_SERVER_DIR"
   MC_RAM="$(suggest_memory)"
   PANEL_PORT="8080"
@@ -254,12 +253,10 @@ collect_install_plan() {
   HTTPS_CERT_DIR="$UI_DIR/certs"
   HTTPS_CERT_PATH="$HTTPS_CERT_DIR/cert.pem"
   HTTPS_KEY_PATH="$HTTPS_CERT_DIR/key.pem"
-  PANEL_HANDLE="admin"
-  PANEL_SECRET=""
 
   section "Stage 4 · Building the install plan"
 
-  if [ -f "$UI_DIR/config.json" ] && [ -f "$UI_DIR/identity.json" ]; then
+  if [ -f "$UI_DIR/config.json" ]; then
     ok "Existing TermuCraft install detected."
     if prompt_yes_no "Keep the current panel config?" Y; then
       KEEP_EXISTING_CONFIG=1
@@ -273,14 +270,6 @@ collect_install_plan() {
         HTTPS_KEY_PATH="$(json_get "$UI_DIR/config.json" "httpsKeyPath" || printf '%s' "$HTTPS_KEY_PATH")"
       fi
       note "Current config will be preserved."
-    fi
-
-    if prompt_yes_no "Keep the current panel identity?" Y; then
-      KEEP_EXISTING_AUTH=1
-      PANEL_HANDLE="$(json_get "$UI_DIR/identity.json" "profile.handle" || printf 'admin')"
-      note "Current identity will be preserved for handle: $PANEL_HANDLE"
-    else
-      note "A new panel identity will be written."
     fi
   fi
 
@@ -309,17 +298,6 @@ collect_install_plan() {
         warn "Enter a valid port between 1 and 65535."
       done
     fi
-  fi
-
-  if [ "$KEEP_EXISTING_AUTH" -eq 0 ]; then
-    while :; do
-      PANEL_HANDLE="$(prompt_default "Panel handle" "$PANEL_HANDLE")"
-      PANEL_HANDLE="${PANEL_HANDLE,,}"
-      [ -n "$PANEL_HANDLE" ] && break
-      warn "Handle cannot be empty."
-    done
-
-    PANEL_SECRET="$(prompt_secret_pair "Panel passphrase" "Confirm passphrase")"
   fi
 }
 
@@ -423,15 +401,8 @@ deploy_payload() {
     ok "Existing config kept"
   fi
 
-  if [ "$KEEP_EXISTING_AUTH" -eq 0 ]; then
-    note "Debug: captured panel passphrase length = ${#PANEL_SECRET}"
-    write_identity_record
-    rm -f "$UI_DIR/auth.json"
-    verify_identity_record || die "identity.json verification failed. The written panel identity does not match the passphrase you entered."
-    ok "Panel identity written for handle: $PANEL_HANDLE"
-  else
-    ok "Existing panel identity kept for handle: $PANEL_HANDLE"
-  fi
+  rm -f "$UI_DIR/identity.json" "$UI_DIR/auth.json"
+  note "Panel auth is disabled in this build."
 }
 
 accept_eula() {
@@ -505,11 +476,10 @@ EOF
 }
 
 print_summary() {
-  local http_port https_enabled https_port protocol panel_port launch_fg launch_bg summary_handle
+  local http_port https_enabled https_port protocol panel_port launch_fg launch_bg
   http_port="$(json_get "$UI_DIR/config.json" "uiPort" || printf '8080')"
   https_enabled="$(json_get "$UI_DIR/config.json" "httpsEnabled" || printf 'false')"
   https_port="$(json_get "$UI_DIR/config.json" "httpsPort" || printf '8443')"
-  summary_handle="$(json_get "$UI_DIR/identity.json" "profile.handle" || printf 'admin')"
   protocol="http"
   if [ "$https_enabled" = "true" ]; then
     protocol="https"
@@ -522,7 +492,7 @@ print_summary() {
   section "Ready"
   echo -e "  ${D}Panel files${N}    $UI_DIR"
   echo -e "  ${D}Server files${N}   $SERVER_DIR"
-  echo -e "  ${D}Panel handle${N}   $summary_handle"
+  echo -e "  ${D}Panel auth${N}     disabled in this build"
   echo -e "  ${D}HTTP port${N}      $http_port"
   if [ "$https_enabled" = "true" ]; then
     echo -e "  ${D}HTTPS port${N}     $https_port"

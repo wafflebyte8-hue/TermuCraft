@@ -10,6 +10,8 @@
 
 TermuCraft is a web-based Minecraft server panel built for running and managing servers directly from Android through Termux. The goal is to make mobile hosting practical, manageable, and less annoying than doing everything by hand.
 
+Current build: `v0.2.4`
+
 ## Install
 
 Run this in Termux:
@@ -22,18 +24,24 @@ chmod +x setup.sh
 ./setup.sh
 ```
 
+The installer currently sets up the panel in open mode.
+
+- Panel auth is disabled in this build
+- The panel opens directly after startup
+- Auth can come back later once it is rebuilt properly
+
 ## Start
 
 Foreground:
 
 ```bash
-~/start-termucraft.sh
+~/termucraft
 ```
 
 Background with `tmux`:
 
 ```bash
-~/start-termucraft-bg.sh
+~/termucraft-bg
 ```
 
 Then open the panel in the browser at:
@@ -64,8 +72,8 @@ Instead of relying on scattered shell commands, manual file edits, and constant 
 - Player actions and admin controls
 - Backups and restore support
 - Crash logging and auto-restart behavior
-- Authentication for panel access
 - Termux-first setup and hosting workflow
+- Open-mode local panel access for now
 
 ## Planned Server Management Scope
 
@@ -118,6 +126,7 @@ The project is expected to stay lightweight and straightforward:
 - This project is separate from DroidMC and not just a rename
 - The current focus is the free/base experience first
 - The goal is to ship something solid before adding extra complexity
+- Authentication is temporarily removed from the current build while the access system is being rebuilt
 
 ## Repository Setup
 
