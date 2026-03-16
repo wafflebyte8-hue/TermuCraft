@@ -101,6 +101,28 @@ prompt_secret_pair() {
   printf '%s' "$first"
 }
 
+verify_written_auth() {
+  local result
+  result="$(AUTH_FILE="$UI_DIR/auth.json" ADMIN_USER="$ADMIN_USER" ADMIN_PASS="$ADMIN_PASS" node <<'EOF'
+const fs = require('fs');
+const crypto = require('crypto');
+const authFile = process.env.AUTH_FILE;
+const expectedUser = process.env.ADMIN_USER || '';
+const expectedPass = process.env.ADMIN_PASS || '';
+try {
+  const auth = JSON.parse(fs.readFileSync(authFile, 'utf8'));
+  const usernameOk = String(auth.username || '') === expectedUser;
+  const hash = crypto.scryptSync(expectedPass, auth.salt, 64).toString('hex');
+  const passwordOk = hash === auth.passwordHash;
+  process.stdout.write(usernameOk && passwordOk ? 'ok' : 'bad');
+} catch {
+  process.stdout.write('bad');
+}
+EOF
+)"
+  [ "$result" = "ok" ]
+}
+
 normalize_port() {
   local value="$1"
   [[ "$value" =~ ^[0-9]+$ ]] || return 1
@@ -246,6 +268,8 @@ collect_install_plan() {
       KEEP_EXISTING_AUTH=1
       ADMIN_USER="$(json_get "$UI_DIR/auth.json" "username" || printf 'admin')"
       note "Current login will be preserved for user: $ADMIN_USER"
+    else
+      note "A new panel login will be written."
     fi
   fi
 
@@ -317,10 +341,11 @@ EOF
 }
 
 write_auth() {
-  ADMIN_USER="$ADMIN_USER" ADMIN_PASS="$ADMIN_PASS" node <<'EOF' > "$UI_DIR/auth.json"
+  printf '%s\n%s\n' "$ADMIN_USER" "$ADMIN_PASS" | node <<'EOF' > "$UI_DIR/auth.json"
 const crypto = require('crypto');
-const username = process.env.ADMIN_USER || 'admin';
-const password = process.env.ADMIN_PASS || 'changeme';
+const input = require('fs').readFileSync(0, 'utf8').split('\n');
+const username = input[0] || 'admin';
+const password = input[1] || 'changeme';
 const salt = crypto.randomBytes(16).toString('hex');
 const passwordHash = crypto.scryptSync(password, salt, 64).toString('hex');
 process.stdout.write(JSON.stringify({
@@ -375,6 +400,7 @@ deploy_payload() {
 
   if [ "$KEEP_EXISTING_AUTH" -eq 0 ]; then
     write_auth
+    verify_written_auth || die "auth.json verification failed. The written panel login does not match the password you entered."
     ok "Panel login written for user: $ADMIN_USER"
   else
     ok "Existing panel login kept for user: $ADMIN_USER"
