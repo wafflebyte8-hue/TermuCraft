@@ -14,6 +14,7 @@ const state = {
   selectedFileKey: 'server.properties',
   selectedFileEditable: false,
   backups: [],
+  panelSnapshots: [],
   managedFiles: [],
   folders: { plugins: [], mods: [], datapacks: [], logs: [] },
   admin: { whitelist: [], ops: [], bans: [] },
@@ -321,6 +322,9 @@ function applyConfig(config) {
   if ($('iJar')) $('iJar').textContent = state.config.serverJar || '-';
   if ($('iDir')) $('iDir').textContent = state.config.serverDir || '-';
   updateStats();
+  if (Object.keys(state.presets || {}).length) {
+    renderPresets();
+  }
 }
 
 function applyNetwork(network) {
@@ -377,9 +381,9 @@ function updateStats() {
   $('cpuSub').textContent = 'of 200% max';
   $('ramSub').textContent = ramLimitMB > 0 ? `of ${fmtBytes(ramLimitMB * 1024 * 1024)} (${ramPct.toFixed(1)}%)` : 'Memory limit unavailable';
   $('diskSub').textContent = diskTotal > 0 ? `of ${fmtBytes(diskTotal)} (${diskPct.toFixed(1)}%)` : 'Storage unavailable';
-  $('cpuBar').style.width = `${Math.min(cpu / 2, 100)}%`;
-  $('ramBar').style.width = `${ramPct}%`;
-  $('diskBar').style.width = `${diskPct}%`;
+  $('cpuBar').style.width = `${Math.max(0, Math.min(cpu / 2, 100))}%`;
+  $('ramBar').style.width = `${Math.max(0, ramPct)}%`;
+  $('diskBar').style.width = `${Math.max(0, diskPct)}%`;
   $('dCpu').style.color = cpuColor;
   $('dRam').style.color = ramColor;
   $('dDisk').style.color = diskColor;
@@ -564,6 +568,7 @@ function renderValidation() {
     <div class="list-row compact"><span>Suggested RAM</span><span>${state.validation.suggestedRamMB || 0} MB</span></div>
     <div class="list-row compact"><span>Configured RAM</span><span>${state.validation.configuredRamMB || 0} MB</span></div>
     <div class="list-row compact"><span>Backups</span><span>${state.validation.backupCount || 0}</span></div>
+    <div class="list-row compact"><span>Panel snapshots</span><span>${state.validation.panelSnapshotCount || 0}</span></div>
     <div class="list-row compact"><span>Last crash</span><span>${state.validation.lastCrash?.lastCrashAt || 'none'}</span></div>
   `;
   $('validationList').innerHTML = (state.validation.checks || []).map((check) => `
@@ -573,6 +578,33 @@ function renderValidation() {
         <div class="propkey">${esc(check.detail)}</div>
       </div>
       <span class="check-pill ${check.ok ? 'ok' : 'bad'}">${check.ok ? 'OK' : 'WARN'}</span>
+    </div>
+  `).join('');
+}
+
+function renderPanelSnapshots() {
+  const el = $('panelSnapshotList');
+  if (!el) return;
+  const count = state.panelSnapshots.length;
+  if ($('panelSnapshotMeta')) {
+    $('panelSnapshotMeta').textContent = count
+      ? `${count} stored. Restoring a snapshot overwrites panel settings and server.properties.`
+      : 'Automatic pre-change snapshots let you roll back panel settings and server.properties.';
+  }
+  if (!count) {
+    el.innerHTML = '<div class="empty">No panel snapshots yet</div>';
+    return;
+  }
+  el.innerHTML = state.panelSnapshots.map((snapshot) => `
+    <div class="list-row">
+      <div class="propinfo">
+        <div class="propname">${esc(snapshot.label || snapshot.id)}</div>
+        <div class="propkey">${esc(snapshot.createdAt || '')} | ${esc(snapshot.reason || 'manual')} | ${esc(snapshot.serverJar || '-')}</div>
+      </div>
+      <div class="row-actions">
+        <button class="abtn ghost sm" data-restore-panel-snapshot="${esc(snapshot.id)}">Restore</button>
+        <button class="abtn danger sm" data-delete-panel-snapshot="${esc(snapshot.id)}">Delete</button>
+      </div>
     </div>
   `).join('');
 }
@@ -647,7 +679,7 @@ async function saveSettings() {
     body: payload,
   });
   applyConfig(config.config);
-  await loadStatus();
+  await Promise.all([loadStatus(), loadPanelSnapshots()]);
   renderBackups();
   toast('Settings saved', 'ok');
   showBtnSuccess($('saveSettingsBtn'));
@@ -665,6 +697,69 @@ async function updateDuckDnsNow() {
   await loadStatus();
   toast(result.state?.lastError ? `DuckDNS error: ${result.state.lastError}` : 'DuckDNS updated', result.state?.lastError ? 'err' : 'ok');
   showBtnSuccess($('updateDuckDnsBtn'));
+}
+
+async function exportPanelSnapshot() {
+  const response = await fetch('/api/panel/export');
+  if (!response.ok) {
+    let message = 'Snapshot export failed';
+    try {
+      const data = await response.json();
+      message = data.error || message;
+    } catch {}
+    throw new Error(message);
+  }
+  const blob = await response.blob();
+  const disposition = response.headers.get('content-disposition') || '';
+  const match = disposition.match(/filename="([^"]+)"/i);
+  const filename = match?.[1] || `termucraft-snapshot-${Date.now()}.json`;
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+  await loadPanelSnapshots();
+  toast('Snapshot exported', 'ok');
+  showBtnSuccess($('exportPanelSnapshotBtn'));
+}
+
+async function importPanelSnapshot(file) {
+  if (!file) return;
+  let payload;
+  try {
+    payload = JSON.parse(await file.text());
+  } catch {
+    throw new Error('Snapshot file is not valid JSON');
+  }
+  if (!confirm('Import this panel snapshot? This will overwrite panel settings and server.properties.')) {
+    return;
+  }
+  await api('/api/panel/import', { method: 'POST', body: payload });
+  await Promise.all([loadStatus(), loadValidation(), loadProperties(), loadPanelSnapshots()]);
+  toast('Snapshot imported', 'ok');
+  showBtnSuccess($('importPanelSnapshotBtn'));
+}
+
+async function restorePanelSnapshot(id) {
+  if (!confirm('Restore this panel snapshot? Current panel settings and server.properties will be overwritten.')) {
+    return;
+  }
+  await api(`/api/panel/snapshots/${encodeURIComponent(id)}/restore`, { method: 'POST' });
+  await Promise.all([loadStatus(), loadValidation(), loadProperties(), loadPanelSnapshots()]);
+  toast('Snapshot restored', 'ok');
+}
+
+async function deletePanelSnapshot(id) {
+  if (!confirm('Delete this stored panel snapshot?')) {
+    return;
+  }
+  const result = await api(`/api/panel/snapshots/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  state.panelSnapshots = result.snapshots || [];
+  renderPanelSnapshots();
+  toast('Snapshot deleted', 'ok');
 }
 
 async function saveAuth() {
@@ -704,6 +799,12 @@ async function loadBackups() {
   const data = await api('/api/backups');
   state.backups = data.backups || [];
   renderBackups();
+}
+
+async function loadPanelSnapshots() {
+  const data = await api('/api/panel/snapshots');
+  state.panelSnapshots = data.snapshots || [];
+  renderPanelSnapshots();
 }
 
 async function loadFiles() {
@@ -825,12 +926,14 @@ async function saveProperties() {
     payload[node.dataset.key] = node.value;
   });
   await api('/api/properties', { method: 'POST', body: payload });
+  await loadPanelSnapshots();
   toast('Properties saved. Restart if needed.', 'ok');
 }
 
 async function saveMotd() {
   await api('/api/properties', { method: 'POST', body: { motd: $('motdInput').value } });
   $('motdPreview').textContent = $('motdInput').value || '';
+  await loadPanelSnapshots();
   toast('MOTD saved', 'ok');
   showBtnSuccess($('saveMotdBtn'));
 }
@@ -920,6 +1023,7 @@ async function bootstrap() {
     loadValidation(),
     loadIntegrity(),
     loadBackups(),
+    loadPanelSnapshots(),
     loadFiles(),
     loadAdminLists(),
     loadMods(),
@@ -973,6 +1077,17 @@ function bindEvents() {
   });
   $('saveSettingsBtn').addEventListener('click', () => saveSettings().catch((error) => toast(error.message, 'err')));
   $('updateDuckDnsBtn')?.addEventListener('click', () => updateDuckDnsNow().catch((error) => toast(error.message, 'err')));
+  $('exportPanelSnapshotBtn')?.addEventListener('click', () => exportPanelSnapshot().catch((error) => toast(error.message, 'err')));
+  $('importPanelSnapshotBtn')?.addEventListener('click', () => $('panelSnapshotFile')?.click());
+  $('panelSnapshotFile')?.addEventListener('change', async (event) => {
+    try {
+      await importPanelSnapshot(event.target.files?.[0]);
+    } catch (error) {
+      toast(error.message, 'err');
+    } finally {
+      event.target.value = '';
+    }
+  });
   $('saveAuthBtn')?.addEventListener('click', () => saveAuth().catch((error) => toast(error.message, 'err')));
   $('saveMotdBtn').addEventListener('click', () => saveMotd().catch((error) => toast(error.message, 'err')));
   $('savePropsBtn').addEventListener('click', () => saveProperties().catch((error) => toast(error.message, 'err')));
@@ -1056,7 +1171,7 @@ function bindEvents() {
     });
   }
   document.body.addEventListener('click', async (event) => {
-    const target = event.target.closest('[data-player-action],[data-admin-remove],[data-restore-backup],[data-delete-backup],[data-file-key],[data-delete-mod],[data-delete-plugin],[data-preset],[data-version-type]');
+    const target = event.target.closest('[data-player-action],[data-admin-remove],[data-restore-backup],[data-delete-backup],[data-file-key],[data-delete-mod],[data-delete-plugin],[data-preset],[data-version-type],[data-restore-panel-snapshot],[data-delete-panel-snapshot]');
     if (!target) return;
     try {
       if (target.dataset.playerAction) {
@@ -1085,11 +1200,15 @@ function bindEvents() {
         await api(`/api/plugins/${encodeURIComponent(target.dataset.deletePlugin)}`, { method: 'DELETE' });
         await Promise.all([loadPlugins(), loadFiles()]);
       } else if (target.dataset.preset) {
-        await api(`/api/presets/${target.dataset.preset}`, { method: 'POST' });
-        await Promise.all([loadStatus(), loadProperties(), api('/api/presets').then((data) => { state.presets = data.presets || {}; renderPresets(); })]);
-        toast('Preset applied', 'ok');
+        const presetResult = await api(`/api/presets/${target.dataset.preset}`, { method: 'POST' });
+        await Promise.allSettled([loadStatus(), loadProperties(), loadPanelSnapshots(), api('/api/presets').then((data) => { state.presets = data.presets || {}; renderPresets(); })]);
+        toast(presetResult.notice || 'Preset applied', presetResult.notice ? 'warn' : 'ok');
         const pr = $('presetList').querySelector('.abtn.primary');
         if (pr) { const row = pr.closest('.list-row'); if (row) { row.classList.add('new-row'); setTimeout(() => row.classList.remove('new-row'), 900); } }
+      } else if (target.dataset.restorePanelSnapshot) {
+        await restorePanelSnapshot(target.dataset.restorePanelSnapshot);
+      } else if (target.dataset.deletePanelSnapshot) {
+        await deletePanelSnapshot(target.dataset.deletePanelSnapshot);
       } else if (target.dataset.versionType) {
         state.selectedVersionType = target.dataset.versionType;
         document.querySelectorAll('[data-version-type]').forEach((node) => node.classList.toggle('active', node.dataset.versionType === state.selectedVersionType));

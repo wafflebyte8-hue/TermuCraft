@@ -4,7 +4,7 @@
 set -euo pipefail
 
 APP_NAME="TermuCraft"
-APP_VERSION="0.4.0"
+APP_VERSION="0.6.0"
 REPO_RAW="https://raw.githubusercontent.com/wafflebyte8-hue/TermuCraft/main"
 UI_DIR="$HOME/TermuCraft"
 DEFAULT_SERVER_DIR="$HOME/termucraft-server"
@@ -324,6 +324,10 @@ write_config() {
   "scheduleBroadcastMessage": "Scheduled notice from TermuCraft.",
   "scheduleRestartTime": "",
   "motd": "A TermuCraft Minecraft Server",
+  "duckDnsEnabled": false,
+  "duckDnsDomain": "",
+  "duckDnsToken": "",
+  "duckDnsIntervalMinutes": 10,
   "lastDownloadedChecksum": "",
   "lastDownloadedChecksumType": ""
 }

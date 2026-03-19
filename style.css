@@ -702,6 +702,14 @@ img {
   gap: 12px;
 }
 
+.panel-actions,
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .stat-card-header {
   align-items: center;
 }

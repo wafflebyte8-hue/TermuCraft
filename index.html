@@ -657,6 +657,21 @@
           </div>
 
           <div class="panel" style="margin-top: 12px">
+            <div class="panel-header-row">
+              <div>
+                <div class="panel-title">Panel Snapshots</div>
+                <div class="panel-sub" id="panelSnapshotMeta">Automatic pre-change snapshots let you roll back panel settings and `server.properties`.</div>
+              </div>
+              <div class="panel-actions">
+                <button class="abtn ghost sm" id="exportPanelSnapshotBtn">Export Snapshot</button>
+                <button class="abtn primary sm" id="importPanelSnapshotBtn">Import Snapshot</button>
+              </div>
+            </div>
+            <input id="panelSnapshotFile" type="file" accept="application/json" hidden />
+            <div class="list-body" id="panelSnapshotList"></div>
+          </div>
+
+          <div class="panel" style="margin-top: 12px">
             <div class="panel-title">Connection Info</div>
             <div class="tips-list">
               <div class="tip-row">Panel: <span class="tip-cmd" id="panelLAN">-</span></div>

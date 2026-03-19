@@ -29,9 +29,18 @@ const CONFIG_FILE = path.join(UI_DIR, 'config.json');
 const ACCESS_FILE = path.join(UI_DIR, 'identity.json');
 const INTEGRITY_FILE = path.join(UI_DIR, 'integrity.json');
 const BACKUP_DIR = path.join(UI_DIR, 'backups');
+const PANEL_SNAPSHOT_DIR = path.join(UI_DIR, 'panel-snapshots');
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const LOG_HISTORY_LIMIT = 3000;
+const PANEL_SNAPSHOT_LIMIT = 18;
 const AUTH_FEATURE_ENABLED = false;
+const APP_VERSION = (() => {
+  try {
+    return require(path.join(__dirname, 'package.json')).version || '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+})();
 
 const CONFIG_DEFAULTS = {
   serverJar: process.env.MC_JAR || 'server.jar',
@@ -198,6 +207,10 @@ function writeJsonFile(filePath, value) {
   fs.writeFileSync(filePath, JSON.stringify(value, null, 2));
 }
 
+function isPlainObject(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
 const ACCESS_PBKDF2_DIGEST = 'sha512';
 const ACCESS_PBKDF2_ROUNDS = 210000;
 const ACCESS_PBKDF2_BYTES = 48;
@@ -276,6 +289,110 @@ function getPublicConfig() {
     ...rest,
     duckDnsTokenConfigured: !!String(duckDnsToken || '').trim(),
   };
+}
+
+function sanitizeMemoryValue(value, fallback = CONFIG_DEFAULTS.memory) {
+  const normalized = String(value || '').trim().toUpperCase();
+  if (!normalized) {
+    return fallback;
+  }
+  if (!/^\d+(?:\.\d+)?[MG]$/.test(normalized)) {
+    throw new Error('Memory must look like 512M or 2G');
+  }
+  return normalized;
+}
+
+function buildNextConfig(baseConfig, patch = {}) {
+  const nextConfig = { ...baseConfig };
+  if (Object.prototype.hasOwnProperty.call(patch || {}, 'memory')) {
+    nextConfig.memory = sanitizeMemoryValue(patch.memory, baseConfig.memory);
+  }
+  if (Object.prototype.hasOwnProperty.call(patch || {}, 'serverDir')) {
+    const value = String(patch.serverDir || '').trim();
+    if (!value) {
+      throw new Error('Server directory is required');
+    }
+    nextConfig.serverDir = path.resolve(value);
+  }
+  if (Object.prototype.hasOwnProperty.call(patch || {}, 'serverJar')) {
+    const value = path.basename(String(patch.serverJar || '').trim());
+    if (!value) {
+      throw new Error('Server JAR is required');
+    }
+    nextConfig.serverJar = value;
+  }
+  if (Object.prototype.hasOwnProperty.call(patch || {}, 'javaPath')) {
+    const value = String(patch.javaPath || '').trim();
+    if (!value) {
+      throw new Error('Java path is required');
+    }
+    nextConfig.javaPath = value;
+  }
+  if (Object.prototype.hasOwnProperty.call(patch || {}, 'httpsEnabled')) {
+    nextConfig.httpsEnabled = !!patch.httpsEnabled;
+  }
+  if (Object.prototype.hasOwnProperty.call(patch || {}, 'httpsPort')) {
+    nextConfig.httpsPort = Math.max(1, Number.parseInt(patch.httpsPort, 10) || 8443);
+  }
+  if (Object.prototype.hasOwnProperty.call(patch || {}, 'httpsCertPath')) {
+    const value = String(patch.httpsCertPath || '').trim();
+    if (value) {
+      nextConfig.httpsCertPath = path.resolve(value);
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(patch || {}, 'httpsKeyPath')) {
+    const value = String(patch.httpsKeyPath || '').trim();
+    if (value) {
+      nextConfig.httpsKeyPath = path.resolve(value);
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(patch || {}, 'preset') && PRESETS[patch.preset]) {
+    nextConfig.preset = patch.preset;
+  }
+  if (Object.prototype.hasOwnProperty.call(patch || {}, 'autoRestart')) {
+    nextConfig.autoRestart = !!patch.autoRestart;
+  }
+  if (Object.prototype.hasOwnProperty.call(patch || {}, 'autoRestartDelaySec')) {
+    nextConfig.autoRestartDelaySec = Math.max(1, Number.parseInt(patch.autoRestartDelaySec, 10) || 10);
+  }
+  if (Object.prototype.hasOwnProperty.call(patch || {}, 'backupRetention')) {
+    nextConfig.backupRetention = Math.max(1, Number.parseInt(patch.backupRetention, 10) || 5);
+  }
+  if (Object.prototype.hasOwnProperty.call(patch || {}, 'scheduleBackupMinutes')) {
+    nextConfig.scheduleBackupMinutes = Math.max(0, Number.parseInt(patch.scheduleBackupMinutes, 10) || 0);
+  }
+  if (Object.prototype.hasOwnProperty.call(patch || {}, 'scheduleBroadcastMinutes')) {
+    nextConfig.scheduleBroadcastMinutes = Math.max(0, Number.parseInt(patch.scheduleBroadcastMinutes, 10) || 0);
+  }
+  if (Object.prototype.hasOwnProperty.call(patch || {}, 'scheduleBroadcastMessage')) {
+    nextConfig.scheduleBroadcastMessage = String(patch.scheduleBroadcastMessage || '');
+  }
+  if (Object.prototype.hasOwnProperty.call(patch || {}, 'scheduleRestartTime')) {
+    const value = String(patch.scheduleRestartTime || '').trim();
+    if (!validateScheduleTime(value)) {
+      throw new Error('Restart time must be HH:MM or empty');
+    }
+    nextConfig.scheduleRestartTime = value;
+  }
+  if (Object.prototype.hasOwnProperty.call(patch || {}, 'motd')) {
+    nextConfig.motd = String(patch.motd || '');
+  }
+  if (Object.prototype.hasOwnProperty.call(patch || {}, 'duckDnsEnabled')) {
+    nextConfig.duckDnsEnabled = !!patch.duckDnsEnabled;
+  }
+  if (Object.prototype.hasOwnProperty.call(patch || {}, 'duckDnsDomain')) {
+    nextConfig.duckDnsDomain = normalizeDuckDnsDomain(patch.duckDnsDomain);
+  }
+  if (Object.prototype.hasOwnProperty.call(patch || {}, 'duckDnsToken')) {
+    const nextToken = String(patch.duckDnsToken || '').trim();
+    if (nextToken) {
+      nextConfig.duckDnsToken = nextToken;
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(patch || {}, 'duckDnsIntervalMinutes')) {
+    nextConfig.duckDnsIntervalMinutes = Math.max(5, Number.parseInt(patch.duckDnsIntervalMinutes, 10) || 10);
+  }
+  return nextConfig;
 }
 
 function loadAccess() {
@@ -499,6 +616,10 @@ function readProperties() {
   return props;
 }
 
+function sanitizePropertyValue(value) {
+  return String(value ?? '').replace(/[\r\n]/g, '');
+}
+
 function writeProperties(props) {
   const filePath = path.join(CONFIG.serverDir, 'server.properties');
   const existing = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '';
@@ -510,18 +631,117 @@ function writeProperties(props) {
     const key = line.split('=')[0].trim();
     if (Object.prototype.hasOwnProperty.call(props, key)) {
       written.add(key);
-      return `${key}=${props[key]}`;
+      return `${key}=${sanitizePropertyValue(props[key])}`;
     }
     return line;
   });
   Object.entries(props).forEach(([key, value]) => {
     if (!written.has(key)) {
-      updated.push(`${key}=${value}`);
+      updated.push(`${key}=${sanitizePropertyValue(value)}`);
     }
   });
   ensureDir(CONFIG.serverDir);
   fs.writeFileSync(filePath, updated.join('\n').replace(/\n{3,}/g, '\n\n'));
   updateIntegrityRecord(filePath, { label: 'server.properties' });
+}
+
+function buildPanelSnapshot(label = 'manual snapshot', reason = 'manual') {
+  return {
+    kind: 'termucraft-panel-snapshot',
+    version: 1,
+    appVersion: APP_VERSION,
+    createdAt: new Date().toISOString(),
+    label,
+    reason,
+    config: getPublicConfig(),
+    properties: readProperties(),
+    meta: {
+      serverDir: CONFIG.serverDir,
+      serverJar: CONFIG.serverJar,
+      authRequired: false,
+    },
+  };
+}
+
+function loadPanelSnapshotFile(id) {
+  const safeId = path.basename(String(id || '').trim());
+  if (!safeId) {
+    throw new Error('Snapshot id is required');
+  }
+  const filePath = path.join(PANEL_SNAPSHOT_DIR, `${safeId}.json`);
+  if (!fs.existsSync(filePath)) {
+    throw new Error('Panel snapshot not found');
+  }
+  return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+}
+
+function listPanelSnapshots() {
+  if (!fs.existsSync(PANEL_SNAPSHOT_DIR)) {
+    return [];
+  }
+  return fs.readdirSync(PANEL_SNAPSHOT_DIR)
+    .filter((file) => file.endsWith('.json'))
+    .map((file) => {
+      try {
+        const fullPath = path.join(PANEL_SNAPSHOT_DIR, file);
+        const data = JSON.parse(fs.readFileSync(fullPath, 'utf8'));
+        return {
+          id: data.id || path.basename(file, '.json'),
+          label: data.label || 'snapshot',
+          reason: data.reason || 'manual',
+          createdAt: data.createdAt || fs.statSync(fullPath).mtime.toISOString(),
+          appVersion: data.appVersion || '0.0.0',
+          configMemory: data.config?.memory || null,
+          serverJar: data.config?.serverJar || null,
+          propertyCount: Object.keys(data.properties || {}).length,
+        };
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean)
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+}
+
+function prunePanelSnapshots() {
+  const snapshots = listPanelSnapshots();
+  snapshots.slice(PANEL_SNAPSHOT_LIMIT).forEach((snapshot) => {
+    fs.rmSync(path.join(PANEL_SNAPSHOT_DIR, `${snapshot.id}.json`), { force: true });
+  });
+}
+
+function createPanelSnapshot(label = 'manual snapshot', reason = 'manual') {
+  ensureDir(PANEL_SNAPSHOT_DIR);
+  const id = `${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(3).toString('hex')}`;
+  const snapshot = {
+    id,
+    ...buildPanelSnapshot(label, reason),
+  };
+  writeJsonFile(path.join(PANEL_SNAPSHOT_DIR, `${id}.json`), snapshot);
+  prunePanelSnapshots();
+  return snapshot;
+}
+
+function applyPanelSnapshot(snapshot) {
+  if (!isPlainObject(snapshot)) {
+    throw new Error('Snapshot payload is invalid');
+  }
+  if (!isPlainObject(snapshot.config)) {
+    throw new Error('Snapshot config is missing');
+  }
+  if (snapshot.properties != null && !isPlainObject(snapshot.properties)) {
+    throw new Error('Snapshot properties are invalid');
+  }
+  CONFIG = buildNextConfig(CONFIG, snapshot.config);
+  saveConfig();
+  if (snapshot.properties) {
+    writeProperties(snapshot.properties);
+  }
+  updateSystemStats();
+  return {
+    config: getPublicConfig(),
+    properties: readProperties(),
+  };
 }
 
 let prevCpu = null;
@@ -722,7 +942,11 @@ function getUptime() {
 
 function getServerPort() {
   const props = readProperties();
-  return props['server-port'] || '25565';
+  const port = Number(props['server-port']);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    return '25565';
+  }
+  return String(port);
 }
 
 function hasHttpsConfig() {
@@ -1315,15 +1539,19 @@ function applyPreset(name) {
   if (!preset) {
     throw new Error('Unknown preset');
   }
+  const serverWasRunning = !!mcProcess;
+  createPanelSnapshot(`pre-preset ${name}`, 'preset');
   CONFIG.preset = name;
   CONFIG.memory = preset.memory;
   saveConfig();
   writeProperties(preset.properties);
   broadcast({ type: 'config', config: getPublicConfig() });
+  broadcast({ type: 'status', ...buildStatusPayload() });
   return {
     preset: name,
     config: getPublicConfig(),
     properties: readProperties(),
+    notice: serverWasRunning ? 'Memory changes will take effect after the next server restart.' : null,
   };
 }
 
@@ -1392,6 +1620,11 @@ function collectValidation() {
         ? `${getDuckDnsHost() || 'domain missing'} | ${duckDnsState.lastError ? duckDnsState.lastError : duckDnsState.lastResult}`
         : 'Disabled',
     },
+    {
+      label: 'Panel snapshots',
+      ok: true,
+      detail: `${listPanelSnapshots().length} stored`,
+    },
   ];
 
   return {
@@ -1402,6 +1635,7 @@ function collectValidation() {
     suggestedRamMB: Math.max(512, Math.floor(totalRamMB / 2 / 512) * 512),
     network: getNetworkInfo(),
     backupCount: listBackups().length,
+    panelSnapshotCount: listPanelSnapshots().length,
     authBootstrap: !!ACCESS.flags?.bootstrap,
     checks,
     lastCrash: crashState,
@@ -1575,12 +1809,15 @@ function downloadFileWithProgress(url, outPath) {
         return;
       }
       const mod = currentUrl.startsWith('https:') ? https : http;
-      mod.get(currentUrl, { headers: { 'User-Agent': 'TermuCraft/0.1' } }, (response) => {
+      const request = mod.get(currentUrl, { headers: { 'User-Agent': `TermuCraft/${APP_VERSION}` } }, (response) => {
         if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
-          doGet(response.headers.location, depth + 1);
+          response.resume();
+          const nextUrl = new URL(response.headers.location, currentUrl).toString();
+          doGet(nextUrl, depth + 1);
           return;
         }
         if (response.statusCode !== 200) {
+          response.resume();
           reject(new Error(`HTTP ${response.statusCode}`));
           return;
         }
@@ -1588,6 +1825,18 @@ function downloadFileWithProgress(url, outPath) {
         downloadState.total = Number.parseInt(response.headers['content-length'] || '0', 10) || 0;
         let received = 0;
         const out = fs.createWriteStream(outPath);
+        const fail = (error) => {
+          try {
+            out.destroy();
+          } catch {}
+          try {
+            response.destroy();
+          } catch {}
+          try {
+            fs.rmSync(outPath, { force: true });
+          } catch {}
+          reject(error);
+        };
         response.on('data', (chunk) => {
           received += chunk.length;
           downloadState.progress = received;
@@ -1597,9 +1846,18 @@ function downloadFileWithProgress(url, outPath) {
         out.on('finish', () => {
           out.close(() => resolve());
         });
-        out.on('error', reject);
-        response.on('error', reject);
-      }).on('error', reject);
+        out.on('error', fail);
+        response.on('error', fail);
+      });
+      request.setTimeout(45000, () => {
+        request.destroy(new Error('Download timed out'));
+      });
+      request.on('error', (error) => {
+        try {
+          fs.rmSync(outPath, { force: true });
+        } catch {}
+        reject(error);
+      });
     };
     doGet(url);
   });
@@ -1629,12 +1887,18 @@ async function verifyDownloadedFile(filePath, expected) {
 
 async function fetchPaperDownload(version) {
   const builds = await httpsGet(`https://api.papermc.io/v2/projects/paper/versions/${version}`);
+  if (!Array.isArray(builds.builds) || builds.builds.length === 0) {
+    throw new Error('No Paper builds found for that version');
+  }
   const build = Math.max(...builds.builds);
   const detail = await httpsGet(`https://api.papermc.io/v2/projects/paper/versions/${version}/builds/${build}`);
   const download = detail.downloads?.application;
+  if (!download?.name) {
+    throw new Error('Paper API returned no downloadable application artifact');
+  }
   return {
     url: `https://api.papermc.io/v2/projects/paper/versions/${version}/builds/${build}/downloads/${download.name}`,
-    checksum: download?.sha256 ? { algorithm: 'sha256', value: String(download.sha256).toLowerCase() } : null,
+    checksum: download.sha256 ? { algorithm: 'sha256', value: String(download.sha256).toLowerCase() } : null,
   };
 }
 
@@ -1759,12 +2023,12 @@ async function performServerDownload(type, version) {
   CONFIG.serverJar = 'server.jar';
   CONFIG.serverType = type;
   CONFIG.serverVersion = version;
-  CONFIG.lastDownloadedChecksum = integrity.sha256 || '';
-  CONFIG.lastDownloadedChecksumType = 'sha256';
+  CONFIG.lastDownloadedChecksum = (integrity && integrity.sha256) || '';
+  CONFIG.lastDownloadedChecksumType = integrity?.sha256 ? 'sha256' : '';
   saveConfig();
   fs.writeFileSync(path.join(CONFIG.serverDir, 'eula.txt'), 'eula=true\n');
   downloadState.done = true;
-  downloadState.checksum = integrity.sha256 || null;
+  downloadState.checksum = (integrity && integrity.sha256) || null;
   broadcast({ type: 'download', ...downloadState });
   broadcast({ type: 'config', config: getPublicConfig() });
   broadcast({ type: 'jarReady' });
@@ -2005,10 +2269,14 @@ function saveUploadedJar(dirName, filename, data) {
   ensureDir(targetDir);
   const safeName = sanitizeUploadName(filename);
   const targetPath = path.join(targetDir, safeName);
-  if (fs.existsSync(targetPath)) {
-    throw new Error('File already exists');
+  try {
+    fs.writeFileSync(targetPath, Buffer.from(data, 'base64'), { flag: 'wx' });
+  } catch (err) {
+    if (err.code === 'EEXIST') {
+      throw new Error('File already exists');
+    }
+    throw err;
   }
-  fs.writeFileSync(targetPath, Buffer.from(data, 'base64'));
   const integrity = updateIntegrityRecord(targetPath, { source: 'upload' });
   return {
     ok: true,
@@ -2191,6 +2459,10 @@ app.post('/api/command', (req, res) => {
     res.json({ error: 'Command is empty' });
     return;
   }
+  if (command.length > 1000) {
+    res.json({ error: 'Command too long (max 1000 characters)' });
+    return;
+  }
   if (!mcProcess) {
     res.json({ error: 'Server is not running' });
     return;
@@ -2244,77 +2516,15 @@ app.get('/api/config', (req, res) => {
 });
 
 app.post('/api/config', async (req, res) => {
-  const nextConfig = { ...CONFIG };
-  if (req.body?.memory) {
-    nextConfig.memory = String(req.body.memory).trim().toUpperCase();
+  let nextConfig;
+  try {
+    nextConfig = buildNextConfig(CONFIG, req.body || {});
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+    return;
   }
-  if (req.body?.serverDir) {
-    nextConfig.serverDir = path.resolve(String(req.body.serverDir));
-  }
-  if (req.body?.serverJar) {
-    nextConfig.serverJar = path.basename(String(req.body.serverJar));
-  }
-  if (req.body?.javaPath) {
-    nextConfig.javaPath = String(req.body.javaPath).trim();
-  }
-  if (Object.prototype.hasOwnProperty.call(req.body || {}, 'httpsEnabled')) {
-    nextConfig.httpsEnabled = !!req.body.httpsEnabled;
-  }
-  if (Object.prototype.hasOwnProperty.call(req.body || {}, 'httpsPort')) {
-    nextConfig.httpsPort = Math.max(1, Number.parseInt(req.body.httpsPort, 10) || 8443);
-  }
-  if (req.body?.httpsCertPath) {
-    nextConfig.httpsCertPath = path.resolve(String(req.body.httpsCertPath).trim());
-  }
-  if (req.body?.httpsKeyPath) {
-    nextConfig.httpsKeyPath = path.resolve(String(req.body.httpsKeyPath).trim());
-  }
-  if (req.body?.preset && PRESETS[req.body.preset]) {
-    nextConfig.preset = req.body.preset;
-  }
-  if (Object.prototype.hasOwnProperty.call(req.body || {}, 'autoRestart')) {
-    nextConfig.autoRestart = !!req.body.autoRestart;
-  }
-  if (Object.prototype.hasOwnProperty.call(req.body || {}, 'autoRestartDelaySec')) {
-    nextConfig.autoRestartDelaySec = Math.max(1, Number.parseInt(req.body.autoRestartDelaySec, 10) || 10);
-  }
-  if (Object.prototype.hasOwnProperty.call(req.body || {}, 'backupRetention')) {
-    nextConfig.backupRetention = Math.max(1, Number.parseInt(req.body.backupRetention, 10) || 5);
-  }
-  if (Object.prototype.hasOwnProperty.call(req.body || {}, 'scheduleBackupMinutes')) {
-    nextConfig.scheduleBackupMinutes = Math.max(0, Number.parseInt(req.body.scheduleBackupMinutes, 10) || 0);
-  }
-  if (Object.prototype.hasOwnProperty.call(req.body || {}, 'scheduleBroadcastMinutes')) {
-    nextConfig.scheduleBroadcastMinutes = Math.max(0, Number.parseInt(req.body.scheduleBroadcastMinutes, 10) || 0);
-  }
-  if (Object.prototype.hasOwnProperty.call(req.body || {}, 'scheduleBroadcastMessage')) {
-    nextConfig.scheduleBroadcastMessage = String(req.body.scheduleBroadcastMessage || '');
-  }
-  if (Object.prototype.hasOwnProperty.call(req.body || {}, 'scheduleRestartTime')) {
-    const value = String(req.body.scheduleRestartTime || '').trim();
-    if (!validateScheduleTime(value)) {
-      res.status(400).json({ error: 'Restart time must be HH:MM or empty' });
-      return;
-    }
-    nextConfig.scheduleRestartTime = value;
-  }
-  if (Object.prototype.hasOwnProperty.call(req.body || {}, 'motd')) {
-    nextConfig.motd = String(req.body.motd || '');
-  }
-  if (Object.prototype.hasOwnProperty.call(req.body || {}, 'duckDnsEnabled')) {
-    nextConfig.duckDnsEnabled = !!req.body.duckDnsEnabled;
-  }
-  if (Object.prototype.hasOwnProperty.call(req.body || {}, 'duckDnsDomain')) {
-    nextConfig.duckDnsDomain = normalizeDuckDnsDomain(req.body.duckDnsDomain);
-  }
-  if (Object.prototype.hasOwnProperty.call(req.body || {}, 'duckDnsToken')) {
-    const nextToken = String(req.body.duckDnsToken || '').trim();
-    if (nextToken) {
-      nextConfig.duckDnsToken = nextToken;
-    }
-  }
-  if (Object.prototype.hasOwnProperty.call(req.body || {}, 'duckDnsIntervalMinutes')) {
-    nextConfig.duckDnsIntervalMinutes = Math.max(5, Number.parseInt(req.body.duckDnsIntervalMinutes, 10) || 10);
+  if (JSON.stringify(nextConfig) !== JSON.stringify(CONFIG)) {
+    createPanelSnapshot('pre-config update', 'config-save');
   }
   CONFIG = nextConfig;
   saveConfig();
@@ -2336,6 +2546,71 @@ app.post('/api/duckdns/update', async (req, res) => {
   }
   const state = await runDuckDnsUpdate('manual');
   res.json({ ok: !state.lastError, state });
+});
+
+app.get('/api/panel/snapshots', (req, res) => {
+  res.json({ snapshots: listPanelSnapshots() });
+});
+
+app.get('/api/panel/export', (req, res) => {
+  const snapshot = createPanelSnapshot('manual export', 'export');
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="termucraft-snapshot-${snapshot.id}.json"`);
+  res.send(JSON.stringify(snapshot, null, 2));
+});
+
+app.post('/api/panel/import', async (req, res) => {
+  try {
+    createPanelSnapshot('pre-import safeguard', 'import-backup');
+    const result = applyPanelSnapshot(req.body || {});
+    if (hasDuckDnsConfig()) {
+      await runDuckDnsUpdate('snapshot import');
+    } else {
+      await maybeRunDuckDnsUpdate();
+    }
+    broadcast({ type: 'config', config: getPublicConfig() });
+    broadcast({ type: 'status', ...buildStatusPayload() });
+    res.json({
+      ok: true,
+      ...result,
+      snapshots: listPanelSnapshots(),
+    });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.post('/api/panel/snapshots/:id/restore', async (req, res) => {
+  try {
+    const snapshot = loadPanelSnapshotFile(req.params.id);
+    createPanelSnapshot(`pre-restore ${req.params.id}`, 'restore-backup');
+    const result = applyPanelSnapshot(snapshot);
+    if (hasDuckDnsConfig()) {
+      await runDuckDnsUpdate(`snapshot restore ${req.params.id}`);
+    } else {
+      await maybeRunDuckDnsUpdate();
+    }
+    broadcast({ type: 'config', config: getPublicConfig() });
+    broadcast({ type: 'status', ...buildStatusPayload() });
+    res.json({
+      ok: true,
+      restored: req.params.id,
+      ...result,
+      snapshots: listPanelSnapshots(),
+    });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.delete('/api/panel/snapshots/:id', (req, res) => {
+  try {
+    const snapshot = loadPanelSnapshotFile(req.params.id);
+    fs.rmSync(path.join(PANEL_SNAPSHOT_DIR, `${snapshot.id}.json`), { force: true });
+    res.json({ ok: true, snapshots: listPanelSnapshots() });
+  } catch (error) {
+    res.status(404).json({ error: error.message });
+  }
 });
 
 app.get('/api/presets', (req, res) => {
@@ -2362,11 +2637,13 @@ app.get('/api/properties', (req, res) => {
 app.post('/api/properties', (req, res) => {
   try {
     const props = { ...req.body };
+    createPanelSnapshot('pre-properties update', 'properties-save');
     if (Object.prototype.hasOwnProperty.call(props, 'motd')) {
       CONFIG.motd = String(props.motd || '');
       saveConfig();
     }
     writeProperties(props);
+    broadcast({ type: 'status', ...buildStatusPayload() });
     res.json({ ok: true });
   } catch (error) {
     res.json({ error: error.message });
@@ -2725,10 +3002,15 @@ wss.on('connection', (socket, req) => {
   const tick = setInterval(() => {
     if (socket.readyState === 1) {
       socket.send(JSON.stringify({ type: 'uptime', uptime: getUptime() }));
+    } else {
+      clearInterval(tick);
     }
   }, 1000);
 
   socket.on('close', () => {
+    clearInterval(tick);
+  });
+  socket.on('error', () => {
     clearInterval(tick);
   });
 });
