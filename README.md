@@ -10,7 +10,7 @@
 
 TermuCraft is a web-based Minecraft server panel built for running and managing servers directly from Android through Termux. The goal is to make mobile hosting practical, manageable, and less annoying than doing everything by hand.
 
-Current build: `v0.5.0`
+Current build: `v0.6.0`
 
 ## Install
 
@@ -75,6 +75,8 @@ Instead of relying on scattered shell commands, manual file edits, and constant 
 - Crash logging and auto-restart behavior
 - Termux-first setup and hosting workflow
 - Open-mode local panel access for now
+- Hardening response headers on all panel responses
+- Unauthenticated `/api/health` endpoint for uptime checks
 
 ## Planned Server Management Scope
 

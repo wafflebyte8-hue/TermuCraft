@@ -425,7 +425,7 @@ install_node_modules() {
   section "Stage 7 · Installing Node dependencies"
   (
     cd "$UI_DIR"
-    npm ci --omit=dev --no-fund --no-audit >/dev/null
+    npm install --omit=dev --no-fund --no-audit >/dev/null
   ) || die "npm install failed."
   printf '%s\n' "$APP_VERSION" > "$UI_DIR/.version"
   ok "Dependencies installed"

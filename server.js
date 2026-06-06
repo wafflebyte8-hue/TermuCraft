@@ -2324,6 +2324,28 @@ function maybeRunScheduledTasks() {
   }
 }
 
+function readPanelVersion() {
+  try {
+    const versionFile = path.join(UI_DIR, '.version');
+    if (fs.existsSync(versionFile)) {
+      const value = fs.readFileSync(versionFile, 'utf8').trim();
+      if (value) return value;
+    }
+  } catch (_) {}
+  try {
+    return require('./package.json').version;
+  } catch (_) {}
+  return 'unknown';
+}
+
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('X-DNS-Prefetch-Control', 'off');
+  next();
+});
+
 app.use(express.json({ limit: '700mb' }));
 
 app.use((error, req, res, next) => {
@@ -2402,6 +2424,15 @@ app.post('/api/auth/change', requireAuth, (req, res) => {
   const token = createSession(ACCESS.profile.handle);
   setSessionCookie(res, token);
   res.json({ ok: true, username: ACCESS.profile.handle, handle: ACCESS.profile.handle });
+});
+
+app.get('/api/health', (req, res) => {
+  res.json({
+    ok: true,
+    panel: 'TermuCraft',
+    version: readPanelVersion(),
+    uptime: Math.floor(process.uptime()),
+  });
 });
 
 app.use('/api', requireAuth);
