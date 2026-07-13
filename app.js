@@ -902,8 +902,17 @@ async function loadPlugins() {
 }
 
 async function loadVersionList() {
-  const data = await api(`/api/versions/${state.selectedVersionType}`);
-  $('verSel').innerHTML = (data.versions || []).slice(0, 100).map((version) => `<option>${esc(version)}</option>`).join('');
+  const select = $('verSel');
+  select.innerHTML = '<option value="" disabled selected>Loading versions...</option>';
+  try {
+    const data = await api(`/api/versions/${state.selectedVersionType}`);
+    const versions = (data.versions || []).slice(0, 100);
+    if (!versions.length) throw new Error('No versions returned');
+    select.innerHTML = versions.map((version) => `<option>${esc(version)}</option>`).join('');
+  } catch (error) {
+    select.innerHTML = '<option value="" disabled selected>Could not load versions - tap the type again to retry</option>';
+    throw error;
+  }
 }
 
 async function loadProperties() {
@@ -1052,7 +1061,9 @@ async function bootstrap() {
     connectSocket();
   }
 
-  await Promise.all([
+  // One slow or failing loader (usually an upstream version API) must not
+  // take the whole panel down with it.
+  const results = await Promise.allSettled([
     loadStatus(),
     loadValidation(),
     loadIntegrity(),
@@ -1066,6 +1077,10 @@ async function bootstrap() {
     loadProperties(),
     api('/api/presets').then((data) => { state.presets = data.presets || {}; renderPresets(); }),
   ]);
+  const failed = results.filter((entry) => entry.status === 'rejected');
+  if (failed.length) {
+    toast(`${failed.length} panel section${failed.length > 1 ? 's' : ''} failed to load: ${failed[0].reason?.message || 'unknown error'}`, 'warn');
+  }
 }
 
 function openPrompt(title, body, label, value = '') {

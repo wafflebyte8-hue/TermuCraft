@@ -12,6 +12,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const zlib = require('zlib');
 
 let pidusage;
 try {
@@ -1559,6 +1560,9 @@ function readAdminList(type) {
   return readJsonArray(filePath).sort((left, right) => String(left.name || '').localeCompare(String(right.name || '')));
 }
 
+const PANEL_USER_AGENT = `TermuCraft/${APP_VERSION} (+https://github.com/wafflebyte8-hue/TermuCraft)`;
+const UPSTREAM_TIMEOUT_MS = 15000;
+
 async function httpsGetRaw(url, depth = 0) {
   return new Promise((resolve, reject) => {
     if (depth > 5) {
@@ -1566,24 +1570,47 @@ async function httpsGetRaw(url, depth = 0) {
       return;
     }
     const mod = url.startsWith('https:') ? https : http;
-    mod.get(url, { headers: { 'User-Agent': 'TermuCraft/0.1 (termux-panel)' } }, (res) => {
+    const request = mod.get(url, {
+      headers: {
+        'User-Agent': PANEL_USER_AGENT,
+        'Accept-Encoding': 'gzip',
+      },
+    }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        httpsGetRaw(res.headers.location, depth + 1).then(resolve).catch(reject);
+        res.resume();
+        const nextUrl = new URL(res.headers.location, url).toString();
+        httpsGetRaw(nextUrl, depth + 1).then(resolve).catch(reject);
         return;
       }
-      let body = '';
-      res.setEncoding('utf8');
+      const chunks = [];
       res.on('data', (chunk) => {
-        body += chunk;
+        chunks.push(chunk);
       });
       res.on('end', () => {
-        if (res.statusCode && res.statusCode >= 400) {
-          reject(new Error(`HTTP ${res.statusCode}`));
-          return;
+        const finish = (error, buffer) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          if (res.statusCode && res.statusCode >= 400) {
+            reject(new Error(`HTTP ${res.statusCode} from ${new URL(url).host}`));
+            return;
+          }
+          resolve(buffer.toString('utf8'));
+        };
+        const body = Buffer.concat(chunks);
+        if (res.headers['content-encoding'] === 'gzip') {
+          zlib.gunzip(body, finish);
+        } else {
+          finish(null, body);
         }
-        resolve(body);
       });
-    }).on('error', reject);
+      res.on('error', reject);
+    });
+    request.setTimeout(UPSTREAM_TIMEOUT_MS, () => {
+      request.destroy(new Error(`Timed out contacting ${new URL(url).host}`));
+    });
+    request.on('error', reject);
   });
 }
 
@@ -1594,6 +1621,37 @@ async function httpsGet(url) {
   } catch {
     return body;
   }
+}
+
+// Tiny TTL cache for upstream version APIs. Concurrent callers share one
+// in-flight request, and a failed refresh serves the stale value instead of
+// erroring — on mobile networks a slightly old list beats a broken Builds tab.
+const upstreamCache = new Map();
+const VERSION_CACHE_TTL_MS = 10 * 60 * 1000;
+
+async function cachedUpstream(key, ttlMs, fetcher) {
+  const entry = upstreamCache.get(key) || { value: undefined, fetchedAt: 0, promise: null };
+  if (entry.value !== undefined && Date.now() - entry.fetchedAt < ttlMs) {
+    return entry.value;
+  }
+  if (entry.promise) {
+    return entry.promise;
+  }
+  entry.promise = fetcher()
+    .then((value) => {
+      upstreamCache.set(key, { value, fetchedAt: Date.now(), promise: null });
+      return value;
+    })
+    .catch((error) => {
+      entry.promise = null;
+      upstreamCache.set(key, entry);
+      if (entry.value !== undefined) {
+        return entry.value;
+      }
+      throw error;
+    });
+  upstreamCache.set(key, entry);
+  return entry.promise;
 }
 
 function parseXmlVersions(xmlText) {
@@ -1976,7 +2034,7 @@ function downloadFileWithProgress(url, outPath) {
         return;
       }
       const mod = currentUrl.startsWith('https:') ? https : http;
-      const request = mod.get(currentUrl, { headers: { 'User-Agent': `TermuCraft/${APP_VERSION}` } }, (response) => {
+      const request = mod.get(currentUrl, { headers: { 'User-Agent': PANEL_USER_AGENT } }, (response) => {
         if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
           response.resume();
           const nextUrl = new URL(response.headers.location, currentUrl).toString();
@@ -2004,10 +2062,17 @@ function downloadFileWithProgress(url, outPath) {
           } catch {}
           reject(error);
         };
+        // Throttle progress broadcasts: one WS message per TCP chunk floods
+        // a phone browser badly enough to freeze the whole panel.
+        let lastProgressBroadcast = 0;
         response.on('data', (chunk) => {
           received += chunk.length;
           downloadState.progress = received;
-          broadcast({ type: 'download', ...downloadState });
+          const nowTs = Date.now();
+          if (nowTs - lastProgressBroadcast >= 250) {
+            lastProgressBroadcast = nowTs;
+            broadcast({ type: 'download', ...downloadState });
+          }
         });
         response.pipe(out);
         out.on('finish', () => {
@@ -2053,19 +2118,18 @@ async function verifyDownloadedFile(filePath, expected) {
 }
 
 async function fetchPaperDownload(version) {
-  const builds = await httpsGet(`https://api.papermc.io/v2/projects/paper/versions/${version}`);
-  if (!Array.isArray(builds.builds) || builds.builds.length === 0) {
-    throw new Error('No Paper builds found for that version');
-  }
-  const build = Math.max(...builds.builds);
-  const detail = await httpsGet(`https://api.papermc.io/v2/projects/paper/versions/${version}/builds/${build}`);
-  const download = detail.downloads?.application;
-  if (!download?.name) {
-    throw new Error('Paper API returned no downloadable application artifact');
+  // PaperMC retired api.papermc.io/v2 (it now returns 410); Fill v3 resolves
+  // the latest build and its signed download URL in a single call.
+  const detail = await httpsGet(`https://fill.papermc.io/v3/projects/paper/versions/${encodeURIComponent(version)}/builds/latest`);
+  const download = detail?.downloads?.['server:default'];
+  if (!download?.url) {
+    throw new Error('Paper API returned no downloadable server artifact for that version');
   }
   return {
-    url: `https://api.papermc.io/v2/projects/paper/versions/${version}/builds/${build}/downloads/${download.name}`,
-    checksum: download.sha256 ? { algorithm: 'sha256', value: String(download.sha256).toLowerCase() } : null,
+    url: download.url,
+    checksum: download.checksums?.sha256
+      ? { algorithm: 'sha256', value: String(download.checksums.sha256).toLowerCase() }
+      : null,
   };
 }
 
@@ -2164,7 +2228,7 @@ async function performServerDownload(type, version) {
     downloadUrl = info.url;
     expectedChecksum = info.checksum;
   } else if (type === 'vanilla') {
-    const manifest = await httpsGet('https://launchermeta.mojang.com/mc/game/version_manifest_v2.json');
+    const manifest = await getMojangManifest();
     const selected = manifest.versions.find((entry) => entry.id === version);
     if (!selected) {
       throw new Error('Version not found');
@@ -3079,101 +3143,86 @@ app.delete('/api/plugins/:name', (req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/api/versions/paper', async (req, res) => {
-  try {
-    const data = await httpsGet('https://api.papermc.io/v2/projects/paper');
-    res.json({ versions: [...data.versions].reverse() });
-  } catch (error) {
-    res.json({ error: error.message });
-  }
-});
+function getMojangManifest() {
+  return cachedUpstream('mojang:manifest', VERSION_CACHE_TTL_MS, () => (
+    httpsGet('https://piston-meta.mojang.com/mc/game/version_manifest_v2.json')
+  ));
+}
 
-app.get('/api/versions/purpur', async (req, res) => {
-  try {
-    const data = await httpsGet('https://api.purpurmc.org/v2/purpur');
-    res.json({ versions: [...(data.versions || [])].reverse() });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
+function versionListEndpoint(key, ttlMs, loader) {
+  return async (req, res) => {
+    try {
+      res.json(await cachedUpstream(key, ttlMs, loader));
+    } catch (error) {
+      res.status(502).json({ error: error.message });
+    }
+  };
+}
 
-app.get('/api/versions/vanilla', async (req, res) => {
-  try {
-    const manifest = await httpsGet('https://launchermeta.mojang.com/mc/game/version_manifest_v2.json');
-    const releases = manifest.versions.filter((entry) => entry.type === 'release');
-    res.json({
-      versions: releases.map((entry) => entry.id),
-      urls: Object.fromEntries(releases.map((entry) => [entry.id, entry.url])),
-    });
-  } catch (error) {
-    res.json({ error: error.message });
-  }
-});
+app.get('/api/versions/paper', versionListEndpoint('versions:paper', VERSION_CACHE_TTL_MS, async () => {
+  // Fill v3 groups versions by release family, newest first.
+  const data = await httpsGet('https://fill.papermc.io/v3/projects/paper');
+  return { versions: Object.values(data.versions || {}).flat() };
+}));
 
-app.get('/api/versions/nukkit', async (req, res) => {
-  try {
-    const releases = await fetchGitHubReleases('CloudburstMC/Nukkit');
-    res.json({
-      versions: releases
-        .map((release) => String(release.tag_name || '').replace(/^v/i, ''))
-        .filter(Boolean),
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
+app.get('/api/versions/purpur', versionListEndpoint('versions:purpur', VERSION_CACHE_TTL_MS, async () => {
+  const data = await httpsGet('https://api.purpurmc.org/v2/purpur');
+  return { versions: [...(data.versions || [])].reverse() };
+}));
 
-app.get('/api/versions/fabric', async (req, res) => {
-  try {
-    const versions = await httpsGet('https://meta.fabricmc.net/v2/versions/game');
-    res.json({ versions: versions.filter((entry) => entry.stable).map((entry) => entry.version) });
-  } catch (error) {
-    res.json({ error: error.message });
-  }
-});
+app.get('/api/versions/vanilla', versionListEndpoint('versions:vanilla', VERSION_CACHE_TTL_MS, async () => {
+  const manifest = await getMojangManifest();
+  const releases = manifest.versions.filter((entry) => entry.type === 'release');
+  return {
+    versions: releases.map((entry) => entry.id),
+    urls: Object.fromEntries(releases.map((entry) => [entry.id, entry.url])),
+  };
+}));
 
-app.get('/api/versions/forge', async (req, res) => {
-  try {
-    const data = await httpsGet('https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json');
-    const versions = [];
-    const seen = new Set();
-    Object.entries(data.promos || {}).forEach(([key, forgeVersion]) => {
-      const match = key.match(/^(.+)-(latest|recommended)$/);
-      if (!match) {
-        return;
-      }
-      const mcVersion = match[1];
-      const label = `${mcVersion} - ${forgeVersion} (${match[2]})`;
-      const dedupeKey = `${mcVersion}-${forgeVersion}`;
-      if (!seen.has(dedupeKey)) {
-        seen.add(dedupeKey);
-        versions.push(label);
-      }
-    });
-    res.json({ versions: versions.reverse() });
-  } catch (error) {
-    res.json({ error: error.message });
-  }
-});
+app.get('/api/versions/nukkit', versionListEndpoint('versions:nukkit', 30 * 60 * 1000, async () => {
+  const releases = await fetchGitHubReleases('CloudburstMC/Nukkit');
+  return {
+    versions: releases
+      .map((release) => String(release.tag_name || '').replace(/^v/i, ''))
+      .filter(Boolean),
+  };
+}));
 
-app.get('/api/versions/neoforge', async (req, res) => {
-  try {
-    const xml = await httpsGetRaw('https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml');
-    const versions = parseXmlVersions(xml).filter((version) => !/(alpha|beta|snapshot)/i.test(version));
-    res.json({ versions: versions.reverse() });
-  } catch (error) {
-    res.json({ error: error.message });
-  }
-});
+app.get('/api/versions/fabric', versionListEndpoint('versions:fabric', VERSION_CACHE_TTL_MS, async () => {
+  const versions = await httpsGet('https://meta.fabricmc.net/v2/versions/game');
+  return { versions: versions.filter((entry) => entry.stable).map((entry) => entry.version) };
+}));
 
-app.get('/api/versions/quilt', async (req, res) => {
-  try {
-    const versions = await httpsGet('https://meta.quiltmc.org/v3/versions/game');
-    res.json({ versions: versions.filter((entry) => entry.stable).map((entry) => entry.version) });
-  } catch (error) {
-    res.json({ error: error.message });
-  }
-});
+app.get('/api/versions/forge', versionListEndpoint('versions:forge', VERSION_CACHE_TTL_MS, async () => {
+  const data = await httpsGet('https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json');
+  const versions = [];
+  const seen = new Set();
+  Object.entries(data.promos || {}).forEach(([key, forgeVersion]) => {
+    const match = key.match(/^(.+)-(latest|recommended)$/);
+    if (!match) {
+      return;
+    }
+    const mcVersion = match[1];
+    const label = `${mcVersion} - ${forgeVersion} (${match[2]})`;
+    const dedupeKey = `${mcVersion}-${forgeVersion}`;
+    if (!seen.has(dedupeKey)) {
+      seen.add(dedupeKey);
+      versions.push(label);
+    }
+  });
+  return { versions: versions.reverse() };
+}));
+
+app.get('/api/versions/neoforge', versionListEndpoint('versions:neoforge', VERSION_CACHE_TTL_MS, async () => {
+  const xml = await httpsGetRaw('https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml');
+  const versions = parseXmlVersions(xml).filter((version) => !/(alpha|beta|snapshot)/i.test(version));
+  return { versions: versions.reverse() };
+}));
+
+app.get('/api/versions/quilt', versionListEndpoint('versions:quilt', VERSION_CACHE_TTL_MS, async () => {
+  const versions = await httpsGet('https://meta.quiltmc.org/v3/versions/game');
+  return { versions: versions.filter((entry) => entry.stable).map((entry) => entry.version) };
+}));
 
 app.post('/api/download', async (req, res) => {
   const type = String(req.body?.type || '').trim();
