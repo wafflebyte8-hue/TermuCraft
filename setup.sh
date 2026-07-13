@@ -4,7 +4,7 @@
 set -euo pipefail
 
 APP_NAME="TermuCraft"
-APP_VERSION="0.7.3"
+APP_VERSION="0.7.4"
 REPO_RAW="https://raw.githubusercontent.com/wafflebyte8-hue/TermuCraft/main"
 UI_DIR="$HOME/TermuCraft"
 DEFAULT_SERVER_DIR="$HOME/termucraft-server"
@@ -86,6 +86,8 @@ prompt_yes_no() {
   fi
 }
 
+# NOTE: this function's stdout is captured with $(...) - every UI line in
+# here must go to stderr or it becomes part of the returned passphrase.
 prompt_secret_pair() {
   local first_label="$1"
   local second_label="$2"
@@ -93,25 +95,26 @@ prompt_secret_pair() {
   local second=""
   while :; do
     read -r -s -p "  ${first_label}: " first
-    echo ""
+    echo "" 1>&2
     read -r -s -p "  ${second_label}: " second
-    echo ""
+    echo "" 1>&2
     first="${first//$'\r'/}"
     second="${second//$'\r'/}"
-    [ "${#first}" -ge 8 ] || { warn "Passphrase must be at least 8 characters."; continue; }
+    [ "${#first}" -ge 8 ] || { warn "Passphrase must be at least 8 characters." 1>&2; continue; }
     [ "$first" = "$second" ] && break
-    warn "Passphrases did not match."
+    warn "Passphrases did not match." 1>&2
   done
   printf '%s' "$first"
 }
 
+# Captured with $(...) too - see the note above.
 prompt_panel_handle() {
   local handle=""
   while :; do
     handle="$(prompt_default "Panel handle" "admin")"
     handle="$(printf '%s' "$handle" | tr '[:upper:]' '[:lower:]')"
     [[ "$handle" =~ ^[a-z0-9][a-z0-9._-]{1,31}$ ]] && break
-    warn "Use 2-32 characters: letters, numbers, dots, dashes, underscores."
+    warn "Use 2-32 characters: letters, numbers, dots, dashes, underscores." 1>&2
   done
   printf '%s' "$handle"
 }
@@ -403,6 +406,10 @@ collect_account_plan() {
     CREATE_ACCOUNT=1
     PANEL_HANDLE="$(prompt_panel_handle)"
     PANEL_SECRET="$(prompt_secret_pair "Panel passphrase (min 8 chars)" "Confirm passphrase")"
+    # `read` values can never contain a newline, so anything before one is
+    # accidentally captured prompt output - keep only the real value.
+    PANEL_HANDLE="${PANEL_HANDLE##*$'\n'}"
+    PANEL_SECRET="${PANEL_SECRET##*$'\n'}"
     PANEL_AUTH_SUMMARY="account ready ($PANEL_HANDLE)"
   fi
 }

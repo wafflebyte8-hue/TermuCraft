@@ -3,131 +3,171 @@
  * TermuCraft - full Minecraft server panel backend for Termux.
  */
 
-const express = require('express');
-const { WebSocketServer } = require('ws');
-const { spawn, spawnSync, execFileSync } = require('child_process');
-const https = require('https');
-const http = require('http');
-const fs = require('fs');
-const path = require('path');
-const os = require('os');
-const crypto = require('crypto');
-const zlib = require('zlib');
+const express = require("express");
+const { WebSocketServer } = require("ws");
+const { spawn, spawnSync, execFileSync } = require("child_process");
+const https = require("https");
+const http = require("http");
+const fs = require("fs");
+const path = require("path");
+const os = require("os");
+const crypto = require("crypto");
+const zlib = require("zlib");
 
 let pidusage;
 try {
-  pidusage = require('pidusage');
+  pidusage = require("pidusage");
 } catch {
   pidusage = null;
 }
 
-const HOME = process.env.HOME || '/data/data/com.termux/files/home';
-const UI_DIR = path.join(HOME, 'TermuCraft');
-const STATIC_DIR = fs.existsSync(path.join(__dirname, 'public'))
-  ? path.join(__dirname, 'public')
+const HOME = process.env.HOME || "/data/data/com.termux/files/home";
+const UI_DIR = path.join(HOME, "TermuCraft");
+const STATIC_DIR = fs.existsSync(path.join(__dirname, "public"))
+  ? path.join(__dirname, "public")
   : __dirname;
-const CONFIG_FILE = path.join(UI_DIR, 'config.json');
-const ACCESS_FILE = path.join(UI_DIR, 'identity.json');
-const INTEGRITY_FILE = path.join(UI_DIR, 'integrity.json');
-const BACKUP_DIR = path.join(UI_DIR, 'backups');
-const PANEL_SNAPSHOT_DIR = path.join(UI_DIR, 'panel-snapshots');
-const SESSIONS_FILE = path.join(UI_DIR, 'sessions.json');
+const CONFIG_FILE = path.join(UI_DIR, "config.json");
+const ACCESS_FILE = path.join(UI_DIR, "identity.json");
+const INTEGRITY_FILE = path.join(UI_DIR, "integrity.json");
+const BACKUP_DIR = path.join(UI_DIR, "backups");
+const PANEL_SNAPSHOT_DIR = path.join(UI_DIR, "panel-snapshots");
+const SESSIONS_FILE = path.join(UI_DIR, "sessions.json");
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const LOG_HISTORY_LIMIT = 3000;
 const PANEL_SNAPSHOT_LIMIT = 18;
 // Set TC_NO_AUTH=1 to run the panel in open mode (no login). Only for
 // trusted, local-only setups.
-const AUTH_FEATURE_ENABLED = process.env.TC_NO_AUTH !== '1';
+const AUTH_FEATURE_ENABLED = process.env.TC_NO_AUTH !== "1";
 const MIN_PASSPHRASE_LENGTH = 8;
 const LOGIN_MAX_FAILURES = 5;
 const LOGIN_LOCKOUT_MS = 5 * 60 * 1000;
 const LOGIN_GUARD_LIMIT = 500;
 const APP_VERSION = (() => {
   try {
-    return require(path.join(__dirname, 'package.json')).version || '0.0.0';
+    return require(path.join(__dirname, "package.json")).version || "0.0.0";
   } catch {
-    return '0.0.0';
+    return "0.0.0";
   }
 })();
 
 const CONFIG_DEFAULTS = {
-  serverJar: process.env.MC_JAR || 'server.jar',
-  serverDir: process.env.MC_DIR || path.join(HOME, 'minecraft'),
-  memory: process.env.MC_RAM || '1G',
-  javaPath: process.env.JAVA || 'java',
-  uiPort: Number.parseInt(process.env.UI_PORT || '8080', 10) || 8080,
+  serverJar: process.env.MC_JAR || "server.jar",
+  serverDir: process.env.MC_DIR || path.join(HOME, "minecraft"),
+  memory: process.env.MC_RAM || "1G",
+  javaPath: process.env.JAVA || "java",
+  uiPort: Number.parseInt(process.env.UI_PORT || "8080", 10) || 8080,
   httpsEnabled: false,
-  httpsPort: Number.parseInt(process.env.HTTPS_PORT || '8443', 10) || 8443,
-  httpsCertPath: path.join(UI_DIR, 'certs', 'cert.pem'),
-  httpsKeyPath: path.join(UI_DIR, 'certs', 'key.pem'),
-  serverType: '',
-  serverVersion: '',
-  preset: 'balanced',
+  httpsPort: Number.parseInt(process.env.HTTPS_PORT || "8443", 10) || 8443,
+  httpsCertPath: path.join(UI_DIR, "certs", "cert.pem"),
+  httpsKeyPath: path.join(UI_DIR, "certs", "key.pem"),
+  serverType: "",
+  serverVersion: "",
+  preset: "balanced",
   autoRestart: true,
   autoRestartDelaySec: 10,
   backupRetention: 5,
   scheduleBackupMinutes: 0,
   scheduleBroadcastMinutes: 0,
-  scheduleBroadcastMessage: 'Scheduled notice from TermuCraft.',
-  scheduleRestartTime: '',
-  motd: 'A TermuCraft Minecraft Server',
+  scheduleBroadcastMessage: "Scheduled notice from TermuCraft.",
+  scheduleRestartTime: "",
+  motd: "A TermuCraft Minecraft Server",
   duckDnsEnabled: false,
-  duckDnsDomain: '',
-  duckDnsToken: '',
+  duckDnsDomain: "",
+  duckDnsToken: "",
   duckDnsIntervalMinutes: 10,
-  lastDownloadedChecksum: '',
-  lastDownloadedChecksumType: '',
+  lastDownloadedChecksum: "",
+  lastDownloadedChecksumType: "",
   requiredJavaMajor: 0,
 };
 
 const PRESETS = {
   battery: {
-    label: 'Battery Saver',
-    memory: '768M',
-    description: 'Lower draw distance and tighter limits for weaker phones.',
+    label: "Battery Saver",
+    memory: "768M",
+    description: "Lower draw distance and tighter limits for weaker phones.",
     properties: {
-      'view-distance': '4',
-      'simulation-distance': '4',
-      'max-players': '4',
-      'network-compression-threshold': '128',
-      'spawn-protection': '8',
+      "view-distance": "4",
+      "simulation-distance": "4",
+      "max-players": "4",
+      "network-compression-threshold": "128",
+      "spawn-protection": "8",
     },
   },
   balanced: {
-    label: 'Balanced',
-    memory: '1G',
-    description: 'Reasonable defaults for most 4 GB phones.',
+    label: "Balanced",
+    memory: "1G",
+    description: "Reasonable defaults for most 4 GB phones.",
     properties: {
-      'view-distance': '6',
-      'simulation-distance': '6',
-      'max-players': '8',
-      'network-compression-threshold': '256',
-      'spawn-protection': '8',
+      "view-distance": "6",
+      "simulation-distance": "6",
+      "max-players": "8",
+      "network-compression-threshold": "256",
+      "spawn-protection": "8",
     },
   },
   capacity: {
-    label: 'Max Players',
-    memory: '1536M',
-    description: 'Higher RAM and view distance when the device can handle it.',
+    label: "Max Players",
+    memory: "1536M",
+    description: "Higher RAM and view distance when the device can handle it.",
     properties: {
-      'view-distance': '8',
-      'simulation-distance': '8',
-      'max-players': '14',
-      'network-compression-threshold': '384',
-      'spawn-protection': '16',
+      "view-distance": "8",
+      "simulation-distance": "8",
+      "max-players": "14",
+      "network-compression-threshold": "384",
+      "spawn-protection": "16",
     },
   },
 };
 
 const MANAGED_TEXT_FILES = [
-  { key: 'server.properties', label: 'server.properties', editable: true, resolve: () => path.join(CONFIG.serverDir, 'server.properties') },
-  { key: 'eula.txt', label: 'eula.txt', editable: true, resolve: () => path.join(CONFIG.serverDir, 'eula.txt') },
-  { key: 'ops.json', label: 'ops.json', editable: true, resolve: () => path.join(CONFIG.serverDir, 'ops.json') },
-  { key: 'whitelist.json', label: 'whitelist.json', editable: true, resolve: () => path.join(CONFIG.serverDir, 'whitelist.json') },
-  { key: 'banned-players.json', label: 'banned-players.json', editable: true, resolve: () => path.join(CONFIG.serverDir, 'banned-players.json') },
-  { key: 'banned-ips.json', label: 'banned-ips.json', editable: true, resolve: () => path.join(CONFIG.serverDir, 'banned-ips.json') },
-  { key: 'latest.log', label: 'logs/latest.log', editable: false, resolve: () => path.join(CONFIG.serverDir, 'logs', 'latest.log') },
-  { key: 'crash.log', label: 'crash.log', editable: false, resolve: () => path.join(CONFIG.serverDir, 'crash.log') },
+  {
+    key: "server.properties",
+    label: "server.properties",
+    editable: true,
+    resolve: () => path.join(CONFIG.serverDir, "server.properties"),
+  },
+  {
+    key: "eula.txt",
+    label: "eula.txt",
+    editable: true,
+    resolve: () => path.join(CONFIG.serverDir, "eula.txt"),
+  },
+  {
+    key: "ops.json",
+    label: "ops.json",
+    editable: true,
+    resolve: () => path.join(CONFIG.serverDir, "ops.json"),
+  },
+  {
+    key: "whitelist.json",
+    label: "whitelist.json",
+    editable: true,
+    resolve: () => path.join(CONFIG.serverDir, "whitelist.json"),
+  },
+  {
+    key: "banned-players.json",
+    label: "banned-players.json",
+    editable: true,
+    resolve: () => path.join(CONFIG.serverDir, "banned-players.json"),
+  },
+  {
+    key: "banned-ips.json",
+    label: "banned-ips.json",
+    editable: true,
+    resolve: () => path.join(CONFIG.serverDir, "banned-ips.json"),
+  },
+  {
+    key: "latest.log",
+    label: "logs/latest.log",
+    editable: false,
+    resolve: () => path.join(CONFIG.serverDir, "logs", "latest.log"),
+  },
+  {
+    key: "crash.log",
+    label: "crash.log",
+    editable: false,
+    resolve: () => path.join(CONFIG.serverDir, "crash.log"),
+  },
 ];
 
 const app = express();
@@ -148,7 +188,7 @@ let expectedExit = false;
 let restartRequested = false;
 let crashState = {
   lastCrashAt: null,
-  lastCrashReason: '',
+  lastCrashReason: "",
   lastCrashCode: null,
   lastCrashSignal: null,
 };
@@ -156,45 +196,48 @@ let rapidCrashCount = 0;
 let schedulerState = {
   lastBackupAt: 0,
   lastBroadcastAt: 0,
-  lastRestartSlot: '',
+  lastRestartSlot: "",
 };
 let duckDnsState = {
   enabled: false,
-  host: '',
+  host: "",
   lastAttemptAt: null,
   lastSuccessAt: null,
-  lastResult: 'disabled',
-  lastError: '',
+  lastResult: "disabled",
+  lastError: "",
   nextRunAt: null,
 };
 let server;
 let wss;
 
-const VERBOSE = process.env.MC_VERBOSE === '1';
+const VERBOSE = process.env.MC_VERBOSE === "1";
 const ANSI = {
-  reset: '\x1b[0m',
-  dim: '\x1b[2m',
-  green: '\x1b[32m',
-  amber: '\x1b[33m',
-  red: '\x1b[31m',
-  blue: '\x1b[34m',
+  reset: "\x1b[0m",
+  dim: "\x1b[2m",
+  green: "\x1b[32m",
+  amber: "\x1b[33m",
+  red: "\x1b[31m",
+  blue: "\x1b[34m",
 };
 
 function verbosePrint(text, type) {
   if (!VERBOSE) {
     return;
   }
-  const time = new Date().toLocaleTimeString('en-US', { hour12: false });
-  const color = type === 'warn'
-    ? ANSI.amber
-    : type === 'error'
-      ? ANSI.red
-      : type === 'system'
-        ? ANSI.green
-        : type === 'cmd'
-          ? ANSI.blue
-          : ANSI.reset;
-  process.stdout.write(`${ANSI.dim}${time}${ANSI.reset} ${color}${text}${ANSI.reset}\n`);
+  const time = new Date().toLocaleTimeString("en-US", { hour12: false });
+  const color =
+    type === "warn"
+      ? ANSI.amber
+      : type === "error"
+        ? ANSI.red
+        : type === "system"
+          ? ANSI.green
+          : type === "cmd"
+            ? ANSI.blue
+            : ANSI.reset;
+  process.stdout.write(
+    `${ANSI.dim}${time}${ANSI.reset} ${color}${text}${ANSI.reset}\n`,
+  );
 }
 
 function ensureDir(dirPath) {
@@ -206,7 +249,7 @@ function readJsonFile(filePath, defaults) {
     if (!fs.existsSync(filePath)) {
       return defaults;
     }
-    return { ...defaults, ...JSON.parse(fs.readFileSync(filePath, 'utf8')) };
+    return { ...defaults, ...JSON.parse(fs.readFileSync(filePath, "utf8")) };
   } catch {
     return defaults;
   }
@@ -218,51 +261,57 @@ function writeJsonFile(filePath, value) {
 }
 
 function isPlainObject(value) {
-  return !!value && typeof value === 'object' && !Array.isArray(value);
+  return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-const ACCESS_PBKDF2_DIGEST = 'sha512';
+const ACCESS_PBKDF2_DIGEST = "sha512";
 const ACCESS_PBKDF2_ROUNDS = 210000;
 const ACCESS_PBKDF2_BYTES = 48;
 
 function normalizeHandle(value) {
-  return String(value || '').trim().toLowerCase();
+  return String(value || "")
+    .trim()
+    .toLowerCase();
 }
 
 function createSecretEnvelope(password) {
   const salt = crypto.randomBytes(24);
   const verifier = crypto.pbkdf2Sync(
-    String(password || ''),
+    String(password || ""),
     salt,
     ACCESS_PBKDF2_ROUNDS,
     ACCESS_PBKDF2_BYTES,
     ACCESS_PBKDF2_DIGEST,
   );
   return {
-    scheme: 'pbkdf2-sha512',
+    scheme: "pbkdf2-sha512",
     rounds: ACCESS_PBKDF2_ROUNDS,
     bytes: ACCESS_PBKDF2_BYTES,
     digest: ACCESS_PBKDF2_DIGEST,
-    salt: salt.toString('base64'),
-    verifier: verifier.toString('base64'),
+    salt: salt.toString("base64"),
+    verifier: verifier.toString("base64"),
   };
 }
 
 function validateHandle(value) {
   const handle = normalizeHandle(value);
   if (!handle) {
-    throw new Error('Handle is required');
+    throw new Error("Handle is required");
   }
   if (!/^[a-z0-9][a-z0-9._-]{1,31}$/.test(handle)) {
-    throw new Error('Handle must be 2-32 characters: letters, numbers, dots, dashes, underscores');
+    throw new Error(
+      "Handle must be 2-32 characters: letters, numbers, dots, dashes, underscores",
+    );
   }
   return handle;
 }
 
 function validatePassphrase(value) {
-  const passphrase = String(value || '');
+  const passphrase = String(value || "");
   if (passphrase.length < MIN_PASSPHRASE_LENGTH) {
-    throw new Error(`Passphrase must be at least ${MIN_PASSPHRASE_LENGTH} characters`);
+    throw new Error(
+      `Passphrase must be at least ${MIN_PASSPHRASE_LENGTH} characters`,
+    );
   }
   return passphrase;
 }
@@ -310,7 +359,7 @@ function buildOpenAccessRecord() {
     version: 1,
     authRequired: false,
     profile: {
-      handle: 'local',
+      handle: "local",
       createdAt: now,
       updatedAt: now,
     },
@@ -334,110 +383,153 @@ function getPublicConfig() {
   const { duckDnsToken, ...rest } = CONFIG;
   return {
     ...rest,
-    duckDnsTokenConfigured: !!String(duckDnsToken || '').trim(),
+    duckDnsTokenConfigured: !!String(duckDnsToken || "").trim(),
   };
 }
 
 function sanitizeMemoryValue(value, fallback = CONFIG_DEFAULTS.memory) {
-  const normalized = String(value || '').trim().toUpperCase();
+  const normalized = String(value || "")
+    .trim()
+    .toUpperCase();
   if (!normalized) {
     return fallback;
   }
   if (!/^\d+(?:\.\d+)?[MG]$/.test(normalized)) {
-    throw new Error('Memory must look like 512M or 2G');
+    throw new Error("Memory must look like 512M or 2G");
   }
   return normalized;
 }
 
 function buildNextConfig(baseConfig, patch = {}) {
   const nextConfig = { ...baseConfig };
-  if (Object.prototype.hasOwnProperty.call(patch || {}, 'memory')) {
+  if (Object.prototype.hasOwnProperty.call(patch || {}, "memory")) {
     nextConfig.memory = sanitizeMemoryValue(patch.memory, baseConfig.memory);
   }
-  if (Object.prototype.hasOwnProperty.call(patch || {}, 'serverDir')) {
-    const value = String(patch.serverDir || '').trim();
+  if (Object.prototype.hasOwnProperty.call(patch || {}, "serverDir")) {
+    const value = String(patch.serverDir || "").trim();
     if (!value) {
-      throw new Error('Server directory is required');
+      throw new Error("Server directory is required");
     }
     nextConfig.serverDir = path.resolve(value);
   }
-  if (Object.prototype.hasOwnProperty.call(patch || {}, 'serverJar')) {
-    const value = path.basename(String(patch.serverJar || '').trim());
+  if (Object.prototype.hasOwnProperty.call(patch || {}, "serverJar")) {
+    const value = path.basename(String(patch.serverJar || "").trim());
     if (!value) {
-      throw new Error('Server JAR is required');
+      throw new Error("Server JAR is required");
     }
     nextConfig.serverJar = value;
   }
-  if (Object.prototype.hasOwnProperty.call(patch || {}, 'javaPath')) {
-    const value = String(patch.javaPath || '').trim();
+  if (Object.prototype.hasOwnProperty.call(patch || {}, "javaPath")) {
+    const value = String(patch.javaPath || "").trim();
     if (!value) {
-      throw new Error('Java path is required');
+      throw new Error("Java path is required");
     }
     nextConfig.javaPath = value;
   }
-  if (Object.prototype.hasOwnProperty.call(patch || {}, 'httpsEnabled')) {
+  if (Object.prototype.hasOwnProperty.call(patch || {}, "httpsEnabled")) {
     nextConfig.httpsEnabled = !!patch.httpsEnabled;
   }
-  if (Object.prototype.hasOwnProperty.call(patch || {}, 'httpsPort')) {
-    nextConfig.httpsPort = Math.max(1, Number.parseInt(patch.httpsPort, 10) || 8443);
+  if (Object.prototype.hasOwnProperty.call(patch || {}, "httpsPort")) {
+    nextConfig.httpsPort = Math.max(
+      1,
+      Number.parseInt(patch.httpsPort, 10) || 8443,
+    );
   }
-  if (Object.prototype.hasOwnProperty.call(patch || {}, 'httpsCertPath')) {
-    const value = String(patch.httpsCertPath || '').trim();
+  if (Object.prototype.hasOwnProperty.call(patch || {}, "httpsCertPath")) {
+    const value = String(patch.httpsCertPath || "").trim();
     if (value) {
       nextConfig.httpsCertPath = path.resolve(value);
     }
   }
-  if (Object.prototype.hasOwnProperty.call(patch || {}, 'httpsKeyPath')) {
-    const value = String(patch.httpsKeyPath || '').trim();
+  if (Object.prototype.hasOwnProperty.call(patch || {}, "httpsKeyPath")) {
+    const value = String(patch.httpsKeyPath || "").trim();
     if (value) {
       nextConfig.httpsKeyPath = path.resolve(value);
     }
   }
-  if (Object.prototype.hasOwnProperty.call(patch || {}, 'preset') && PRESETS[patch.preset]) {
+  if (
+    Object.prototype.hasOwnProperty.call(patch || {}, "preset") &&
+    PRESETS[patch.preset]
+  ) {
     nextConfig.preset = patch.preset;
   }
-  if (Object.prototype.hasOwnProperty.call(patch || {}, 'autoRestart')) {
+  if (Object.prototype.hasOwnProperty.call(patch || {}, "autoRestart")) {
     nextConfig.autoRestart = !!patch.autoRestart;
   }
-  if (Object.prototype.hasOwnProperty.call(patch || {}, 'autoRestartDelaySec')) {
-    nextConfig.autoRestartDelaySec = Math.max(1, Number.parseInt(patch.autoRestartDelaySec, 10) || 10);
+  if (
+    Object.prototype.hasOwnProperty.call(patch || {}, "autoRestartDelaySec")
+  ) {
+    nextConfig.autoRestartDelaySec = Math.max(
+      1,
+      Number.parseInt(patch.autoRestartDelaySec, 10) || 10,
+    );
   }
-  if (Object.prototype.hasOwnProperty.call(patch || {}, 'backupRetention')) {
-    nextConfig.backupRetention = Math.max(1, Number.parseInt(patch.backupRetention, 10) || 5);
+  if (Object.prototype.hasOwnProperty.call(patch || {}, "backupRetention")) {
+    nextConfig.backupRetention = Math.max(
+      1,
+      Number.parseInt(patch.backupRetention, 10) || 5,
+    );
   }
-  if (Object.prototype.hasOwnProperty.call(patch || {}, 'scheduleBackupMinutes')) {
-    nextConfig.scheduleBackupMinutes = Math.max(0, Number.parseInt(patch.scheduleBackupMinutes, 10) || 0);
+  if (
+    Object.prototype.hasOwnProperty.call(patch || {}, "scheduleBackupMinutes")
+  ) {
+    nextConfig.scheduleBackupMinutes = Math.max(
+      0,
+      Number.parseInt(patch.scheduleBackupMinutes, 10) || 0,
+    );
   }
-  if (Object.prototype.hasOwnProperty.call(patch || {}, 'scheduleBroadcastMinutes')) {
-    nextConfig.scheduleBroadcastMinutes = Math.max(0, Number.parseInt(patch.scheduleBroadcastMinutes, 10) || 0);
+  if (
+    Object.prototype.hasOwnProperty.call(
+      patch || {},
+      "scheduleBroadcastMinutes",
+    )
+  ) {
+    nextConfig.scheduleBroadcastMinutes = Math.max(
+      0,
+      Number.parseInt(patch.scheduleBroadcastMinutes, 10) || 0,
+    );
   }
-  if (Object.prototype.hasOwnProperty.call(patch || {}, 'scheduleBroadcastMessage')) {
-    nextConfig.scheduleBroadcastMessage = String(patch.scheduleBroadcastMessage || '');
+  if (
+    Object.prototype.hasOwnProperty.call(
+      patch || {},
+      "scheduleBroadcastMessage",
+    )
+  ) {
+    nextConfig.scheduleBroadcastMessage = String(
+      patch.scheduleBroadcastMessage || "",
+    );
   }
-  if (Object.prototype.hasOwnProperty.call(patch || {}, 'scheduleRestartTime')) {
-    const value = String(patch.scheduleRestartTime || '').trim();
+  if (
+    Object.prototype.hasOwnProperty.call(patch || {}, "scheduleRestartTime")
+  ) {
+    const value = String(patch.scheduleRestartTime || "").trim();
     if (!validateScheduleTime(value)) {
-      throw new Error('Restart time must be HH:MM or empty');
+      throw new Error("Restart time must be HH:MM or empty");
     }
     nextConfig.scheduleRestartTime = value;
   }
-  if (Object.prototype.hasOwnProperty.call(patch || {}, 'motd')) {
-    nextConfig.motd = String(patch.motd || '');
+  if (Object.prototype.hasOwnProperty.call(patch || {}, "motd")) {
+    nextConfig.motd = String(patch.motd || "");
   }
-  if (Object.prototype.hasOwnProperty.call(patch || {}, 'duckDnsEnabled')) {
+  if (Object.prototype.hasOwnProperty.call(patch || {}, "duckDnsEnabled")) {
     nextConfig.duckDnsEnabled = !!patch.duckDnsEnabled;
   }
-  if (Object.prototype.hasOwnProperty.call(patch || {}, 'duckDnsDomain')) {
+  if (Object.prototype.hasOwnProperty.call(patch || {}, "duckDnsDomain")) {
     nextConfig.duckDnsDomain = normalizeDuckDnsDomain(patch.duckDnsDomain);
   }
-  if (Object.prototype.hasOwnProperty.call(patch || {}, 'duckDnsToken')) {
-    const nextToken = String(patch.duckDnsToken || '').trim();
+  if (Object.prototype.hasOwnProperty.call(patch || {}, "duckDnsToken")) {
+    const nextToken = String(patch.duckDnsToken || "").trim();
     if (nextToken) {
       nextConfig.duckDnsToken = nextToken;
     }
   }
-  if (Object.prototype.hasOwnProperty.call(patch || {}, 'duckDnsIntervalMinutes')) {
-    nextConfig.duckDnsIntervalMinutes = Math.max(5, Number.parseInt(patch.duckDnsIntervalMinutes, 10) || 10);
+  if (
+    Object.prototype.hasOwnProperty.call(patch || {}, "duckDnsIntervalMinutes")
+  ) {
+    nextConfig.duckDnsIntervalMinutes = Math.max(
+      5,
+      Number.parseInt(patch.duckDnsIntervalMinutes, 10) || 10,
+    );
   }
   return nextConfig;
 }
@@ -448,24 +540,38 @@ function loadAccess() {
   }
   const current = readJsonFile(ACCESS_FILE, null);
   if (
-    current
-    && current.secret
-    && current.secret.salt
-    && current.secret.verifier
+    current &&
+    current.secret &&
+    current.secret.salt &&
+    current.secret.verifier
   ) {
-    const handle = normalizeHandle(current.profile?.handle || current.username || 'admin') || 'admin';
+    const handle =
+      normalizeHandle(current.profile?.handle || current.username || "admin") ||
+      "admin";
     return {
       version: Number(current.version || 1) || 1,
-      authRequired: AUTH_FEATURE_ENABLED ? current.authRequired !== false : false,
+      authRequired: AUTH_FEATURE_ENABLED
+        ? current.authRequired !== false
+        : false,
       profile: {
         handle,
-        createdAt: current.profile?.createdAt || current.updatedAt || new Date().toISOString(),
-        updatedAt: current.profile?.updatedAt || current.updatedAt || new Date().toISOString(),
+        createdAt:
+          current.profile?.createdAt ||
+          current.updatedAt ||
+          new Date().toISOString(),
+        updatedAt:
+          current.profile?.updatedAt ||
+          current.updatedAt ||
+          new Date().toISOString(),
       },
       secret: {
-        scheme: current.secret.scheme || 'pbkdf2-sha512',
-        rounds: Number(current.secret.rounds || ACCESS_PBKDF2_ROUNDS) || ACCESS_PBKDF2_ROUNDS,
-        bytes: Number(current.secret.bytes || ACCESS_PBKDF2_BYTES) || ACCESS_PBKDF2_BYTES,
+        scheme: current.secret.scheme || "pbkdf2-sha512",
+        rounds:
+          Number(current.secret.rounds || ACCESS_PBKDF2_ROUNDS) ||
+          ACCESS_PBKDF2_ROUNDS,
+        bytes:
+          Number(current.secret.bytes || ACCESS_PBKDF2_BYTES) ||
+          ACCESS_PBKDF2_BYTES,
         digest: current.secret.digest || ACCESS_PBKDF2_DIGEST,
         salt: current.secret.salt,
         verifier: current.secret.verifier,
@@ -496,11 +602,11 @@ function saveIntegrity() {
   writeJsonFile(INTEGRITY_FILE, INTEGRITY);
 }
 
-function parseCookies(cookieHeader = '') {
-  return cookieHeader.split(';').reduce((accumulator, part) => {
-    const [key, ...rest] = part.trim().split('=');
+function parseCookies(cookieHeader = "") {
+  return cookieHeader.split(";").reduce((accumulator, part) => {
+    const [key, ...rest] = part.trim().split("=");
     if (key) {
-      accumulator[key] = decodeURIComponent(rest.join('=') || '');
+      accumulator[key] = decodeURIComponent(rest.join("=") || "");
     }
     return accumulator;
   }, {});
@@ -509,7 +615,7 @@ function parseCookies(cookieHeader = '') {
 // Session tokens are stored hashed so sessions.json never contains a value
 // that can be replayed directly as a cookie.
 function hashSessionToken(token) {
-  return crypto.createHash('sha256').update(String(token)).digest('hex');
+  return crypto.createHash("sha256").update(String(token)).digest("hex");
 }
 
 function loadSessions() {
@@ -518,13 +624,13 @@ function loadSessions() {
   const now = Date.now();
   Object.entries(stored.sessions || {}).forEach(([tokenHash, session]) => {
     if (
-      session
-      && typeof tokenHash === 'string'
-      && /^[0-9a-f]{64}$/.test(tokenHash)
-      && Number(session.expiresAt) > now
+      session &&
+      typeof tokenHash === "string" &&
+      /^[0-9a-f]{64}$/.test(tokenHash) &&
+      Number(session.expiresAt) > now
     ) {
       restored.set(tokenHash, {
-        username: String(session.username || ''),
+        username: String(session.username || ""),
         createdAt: Number(session.createdAt) || now,
         expiresAt: Number(session.expiresAt),
       });
@@ -540,12 +646,12 @@ function persistSessions() {
   try {
     writeJsonFile(SESSIONS_FILE, { sessions: Object.fromEntries(sessions) });
   } catch (error) {
-    verbosePrint(`Could not persist sessions: ${error.message}`, 'warn');
+    verbosePrint(`Could not persist sessions: ${error.message}`, "warn");
   }
 }
 
 function createSession(username) {
-  const token = crypto.randomBytes(24).toString('hex');
+  const token = crypto.randomBytes(24).toString("hex");
   sessions.set(hashSessionToken(token), {
     username,
     createdAt: Date.now(),
@@ -578,7 +684,7 @@ function pruneSessions() {
 
 function getSessionFromRequest(req) {
   pruneSessions();
-  const token = parseCookies(req.headers.cookie || '').termucraft_session;
+  const token = parseCookies(req.headers.cookie || "").termucraft_session;
   if (!token) {
     return null;
   }
@@ -594,19 +700,22 @@ function getSessionFromRequest(req) {
 }
 
 function sessionCookieFlags() {
-  const secure = hasHttpsConfig() ? '; Secure' : '';
+  const secure = hasHttpsConfig() ? "; Secure" : "";
   return `Path=/; HttpOnly; SameSite=Strict${secure}`;
 }
 
 function setSessionCookie(res, token) {
   res.setHeader(
-    'Set-Cookie',
+    "Set-Cookie",
     `termucraft_session=${token}; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}; ${sessionCookieFlags()}`,
   );
 }
 
 function clearSessionCookie(res) {
-  res.setHeader('Set-Cookie', `termucraft_session=; Max-Age=0; ${sessionCookieFlags()}`);
+  res.setHeader(
+    "Set-Cookie",
+    `termucraft_session=; Max-Age=0; ${sessionCookieFlags()}`,
+  );
 }
 
 function requireAuth(req, res, next) {
@@ -615,12 +724,12 @@ function requireAuth(req, res, next) {
     return;
   }
   if (needsSetup()) {
-    res.status(401).json({ error: 'Panel setup required', needsSetup: true });
+    res.status(401).json({ error: "Panel setup required", needsSetup: true });
     return;
   }
   const session = getSessionFromRequest(req);
   if (!session) {
-    res.status(401).json({ error: 'Authentication required' });
+    res.status(401).json({ error: "Authentication required" });
     return;
   }
   req.session = session;
@@ -631,7 +740,7 @@ function requireAuth(req, res, next) {
 const loginGuard = new Map();
 
 function getClientKey(req) {
-  return String(req.socket?.remoteAddress || 'unknown');
+  return String(req.socket?.remoteAddress || "unknown");
 }
 
 function pruneLoginGuard() {
@@ -640,7 +749,10 @@ function pruneLoginGuard() {
   }
   const now = Date.now();
   loginGuard.forEach((entry, key) => {
-    if (entry.lockedUntil <= now && now - entry.lastFailureAt > LOGIN_LOCKOUT_MS) {
+    if (
+      entry.lockedUntil <= now &&
+      now - entry.lastFailureAt > LOGIN_LOCKOUT_MS
+    ) {
       loginGuard.delete(key);
     }
   });
@@ -657,7 +769,11 @@ function loginLockedSeconds(req) {
 function recordLoginFailure(req) {
   pruneLoginGuard();
   const key = getClientKey(req);
-  const entry = loginGuard.get(key) || { failures: 0, lockedUntil: 0, lastFailureAt: 0 };
+  const entry = loginGuard.get(key) || {
+    failures: 0,
+    lockedUntil: 0,
+    lastFailureAt: 0,
+  };
   const now = Date.now();
   if (now - entry.lastFailureAt > LOGIN_LOCKOUT_MS) {
     entry.failures = 0;
@@ -667,7 +783,7 @@ function recordLoginFailure(req) {
   if (entry.failures >= LOGIN_MAX_FAILURES) {
     entry.lockedUntil = now + LOGIN_LOCKOUT_MS;
     entry.failures = 0;
-    addLog(`Login locked for ${key} after repeated failures`, 'warn');
+    addLog(`Login locked for ${key} after repeated failures`, "warn");
   }
   loginGuard.set(key, entry);
 }
@@ -679,8 +795,8 @@ function clearLoginFailures(req) {
 function deriveSecretAsync(password, secret) {
   return new Promise((resolve, reject) => {
     crypto.pbkdf2(
-      String(password || ''),
-      Buffer.from(secret.salt, 'base64'),
+      String(password || ""),
+      Buffer.from(secret.salt, "base64"),
       secret.rounds,
       secret.bytes,
       secret.digest,
@@ -700,7 +816,7 @@ async function verifyAccess(handle, password) {
   if (normalizeHandle(handle) !== ACCESS.profile.handle) {
     return false;
   }
-  const stored = Buffer.from(ACCESS.secret.verifier, 'base64');
+  const stored = Buffer.from(ACCESS.secret.verifier, "base64");
   const derived = await deriveSecretAsync(password, ACCESS.secret);
   if (stored.length !== derived.length) {
     return false;
@@ -713,7 +829,8 @@ function setAccess(handle, password, bootstrap = false) {
     ACCESS = buildOpenAccessRecord();
     return;
   }
-  const existingCreatedAt = ACCESS?.profile?.createdAt || new Date().toISOString();
+  const existingCreatedAt =
+    ACCESS?.profile?.createdAt || new Date().toISOString();
   ACCESS = buildAccessRecord(handle, password, bootstrap);
   ACCESS.profile.createdAt = existingCreatedAt;
   ACCESS.profile.updatedAt = new Date().toISOString();
@@ -723,8 +840,8 @@ function setAccess(handle, password, bootstrap = false) {
 
 function commandExists(command) {
   try {
-    execFileSync('which', [command], {
-      stdio: ['ignore', 'ignore', 'ignore'],
+    execFileSync("which", [command], {
+      stdio: ["ignore", "ignore", "ignore"],
     });
     return true;
   } catch {
@@ -744,10 +861,10 @@ function broadcast(message) {
   });
 }
 
-function shaForFile(filePath, algorithm = 'sha256') {
+function shaForFile(filePath, algorithm = "sha256") {
   const hash = crypto.createHash(algorithm);
   hash.update(fs.readFileSync(filePath));
-  return hash.digest('hex');
+  return hash.digest("hex");
 }
 
 function updateIntegrityRecord(filePath, metadata = {}) {
@@ -755,7 +872,7 @@ function updateIntegrityRecord(filePath, metadata = {}) {
     return null;
   }
   const record = {
-    sha256: shaForFile(filePath, 'sha256'),
+    sha256: shaForFile(filePath, "sha256"),
     size: fs.statSync(filePath).size,
     updatedAt: new Date().toISOString(),
     path: filePath,
@@ -771,34 +888,38 @@ function getIntegrityRecord(filePath) {
 }
 
 function readProperties() {
-  const filePath = path.join(CONFIG.serverDir, 'server.properties');
+  const filePath = path.join(CONFIG.serverDir, "server.properties");
   if (!fs.existsSync(filePath)) {
     return {};
   }
   const props = {};
-  fs.readFileSync(filePath, 'utf8').split('\n').forEach((line) => {
-    if (!line || line.startsWith('#') || !line.includes('=')) {
-      return;
-    }
-    const [key, ...rest] = line.split('=');
-    props[key.trim()] = rest.join('=').trim();
-  });
+  fs.readFileSync(filePath, "utf8")
+    .split("\n")
+    .forEach((line) => {
+      if (!line || line.startsWith("#") || !line.includes("=")) {
+        return;
+      }
+      const [key, ...rest] = line.split("=");
+      props[key.trim()] = rest.join("=").trim();
+    });
   return props;
 }
 
 function sanitizePropertyValue(value) {
-  return String(value ?? '').replace(/[\r\n]/g, '');
+  return String(value ?? "").replace(/[\r\n]/g, "");
 }
 
 function writeProperties(props) {
-  const filePath = path.join(CONFIG.serverDir, 'server.properties');
-  const existing = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '';
+  const filePath = path.join(CONFIG.serverDir, "server.properties");
+  const existing = fs.existsSync(filePath)
+    ? fs.readFileSync(filePath, "utf8")
+    : "";
   const written = new Set();
-  const updated = existing.split('\n').map((line) => {
-    if (!line || line.startsWith('#') || !line.includes('=')) {
+  const updated = existing.split("\n").map((line) => {
+    if (!line || line.startsWith("#") || !line.includes("=")) {
       return line;
     }
-    const key = line.split('=')[0].trim();
+    const key = line.split("=")[0].trim();
     if (Object.prototype.hasOwnProperty.call(props, key)) {
       written.add(key);
       return `${key}=${sanitizePropertyValue(props[key])}`;
@@ -811,13 +932,13 @@ function writeProperties(props) {
     }
   });
   ensureDir(CONFIG.serverDir);
-  fs.writeFileSync(filePath, updated.join('\n').replace(/\n{3,}/g, '\n\n'));
-  updateIntegrityRecord(filePath, { label: 'server.properties' });
+  fs.writeFileSync(filePath, updated.join("\n").replace(/\n{3,}/g, "\n\n"));
+  updateIntegrityRecord(filePath, { label: "server.properties" });
 }
 
-function buildPanelSnapshot(label = 'manual snapshot', reason = 'manual') {
+function buildPanelSnapshot(label = "manual snapshot", reason = "manual") {
   return {
-    kind: 'termucraft-panel-snapshot',
+    kind: "termucraft-panel-snapshot",
     version: 1,
     appVersion: APP_VERSION,
     createdAt: new Date().toISOString(),
@@ -834,33 +955,35 @@ function buildPanelSnapshot(label = 'manual snapshot', reason = 'manual') {
 }
 
 function loadPanelSnapshotFile(id) {
-  const safeId = path.basename(String(id || '').trim());
+  const safeId = path.basename(String(id || "").trim());
   if (!safeId) {
-    throw new Error('Snapshot id is required');
+    throw new Error("Snapshot id is required");
   }
   const filePath = path.join(PANEL_SNAPSHOT_DIR, `${safeId}.json`);
   if (!fs.existsSync(filePath)) {
-    throw new Error('Panel snapshot not found');
+    throw new Error("Panel snapshot not found");
   }
-  return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  return JSON.parse(fs.readFileSync(filePath, "utf8"));
 }
 
 function listPanelSnapshots() {
   if (!fs.existsSync(PANEL_SNAPSHOT_DIR)) {
     return [];
   }
-  return fs.readdirSync(PANEL_SNAPSHOT_DIR)
-    .filter((file) => file.endsWith('.json'))
+  return fs
+    .readdirSync(PANEL_SNAPSHOT_DIR)
+    .filter((file) => file.endsWith(".json"))
     .map((file) => {
       try {
         const fullPath = path.join(PANEL_SNAPSHOT_DIR, file);
-        const data = JSON.parse(fs.readFileSync(fullPath, 'utf8'));
+        const data = JSON.parse(fs.readFileSync(fullPath, "utf8"));
         return {
-          id: data.id || path.basename(file, '.json'),
-          label: data.label || 'snapshot',
-          reason: data.reason || 'manual',
-          createdAt: data.createdAt || fs.statSync(fullPath).mtime.toISOString(),
-          appVersion: data.appVersion || '0.0.0',
+          id: data.id || path.basename(file, ".json"),
+          label: data.label || "snapshot",
+          reason: data.reason || "manual",
+          createdAt:
+            data.createdAt || fs.statSync(fullPath).mtime.toISOString(),
+          appVersion: data.appVersion || "0.0.0",
           configMemory: data.config?.memory || null,
           serverJar: data.config?.serverJar || null,
           propertyCount: Object.keys(data.properties || {}).length,
@@ -876,13 +999,15 @@ function listPanelSnapshots() {
 function prunePanelSnapshots() {
   const snapshots = listPanelSnapshots();
   snapshots.slice(PANEL_SNAPSHOT_LIMIT).forEach((snapshot) => {
-    fs.rmSync(path.join(PANEL_SNAPSHOT_DIR, `${snapshot.id}.json`), { force: true });
+    fs.rmSync(path.join(PANEL_SNAPSHOT_DIR, `${snapshot.id}.json`), {
+      force: true,
+    });
   });
 }
 
-function createPanelSnapshot(label = 'manual snapshot', reason = 'manual') {
+function createPanelSnapshot(label = "manual snapshot", reason = "manual") {
   ensureDir(PANEL_SNAPSHOT_DIR);
-  const id = `${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(3).toString('hex')}`;
+  const id = `${new Date().toISOString().replace(/[:.]/g, "-")}-${crypto.randomBytes(3).toString("hex")}`;
   const snapshot = {
     id,
     ...buildPanelSnapshot(label, reason),
@@ -894,13 +1019,13 @@ function createPanelSnapshot(label = 'manual snapshot', reason = 'manual') {
 
 function applyPanelSnapshot(snapshot) {
   if (!isPlainObject(snapshot)) {
-    throw new Error('Snapshot payload is invalid');
+    throw new Error("Snapshot payload is invalid");
   }
   if (!isPlainObject(snapshot.config)) {
-    throw new Error('Snapshot config is missing');
+    throw new Error("Snapshot config is missing");
   }
   if (snapshot.properties != null && !isPlainObject(snapshot.properties)) {
-    throw new Error('Snapshot properties are invalid');
+    throw new Error("Snapshot properties are invalid");
   }
   CONFIG = buildNextConfig(CONFIG, snapshot.config);
   saveConfig();
@@ -924,11 +1049,11 @@ function hasRootAccess() {
     return rootAccess;
   }
   try {
-    const uid = execFileSync('su', ['-c', 'id -u'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
+    const uid = execFileSync("su", ["-c", "id -u"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
     }).trim();
-    rootAccess = uid === '0';
+    rootAccess = uid === "0";
   } catch {
     rootAccess = false;
   }
@@ -940,10 +1065,12 @@ function getClockTicksPerSecond() {
     return clockTicks;
   }
   try {
-    const value = Number(execFileSync('getconf', ['CLK_TCK'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim());
+    const value = Number(
+      execFileSync("getconf", ["CLK_TCK"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim(),
+    );
     clockTicks = Number.isFinite(value) && value > 0 ? value : 100;
   } catch {
     clockTicks = 100;
@@ -952,9 +1079,9 @@ function getClockTicksPerSecond() {
 }
 
 function readRootFile(filePath) {
-  return execFileSync('su', ['-c', `cat ${filePath}`], {
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'ignore'],
+  return execFileSync("su", ["-c", `cat ${filePath}`], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
   });
 }
 
@@ -962,9 +1089,12 @@ function readRootProcessStats(pid) {
   try {
     const statText = readRootFile(`/proc/${pid}/stat`).trim();
     const statusText = readRootFile(`/proc/${pid}/status`);
-    const uptimeText = readRootFile('/proc/uptime').trim();
-    const statFields = statText.slice(statText.lastIndexOf(')') + 2).split(/\s+/);
-    const totalTicks = Number(statFields[11] || 0) + Number(statFields[12] || 0);
+    const uptimeText = readRootFile("/proc/uptime").trim();
+    const statFields = statText
+      .slice(statText.lastIndexOf(")") + 2)
+      .split(/\s+/);
+    const totalTicks =
+      Number(statFields[11] || 0) + Number(statFields[12] || 0);
     const uptimeSeconds = Number(uptimeText.split(/\s+/)[0] || 0);
     const rssMatch = statusText.match(/^VmRSS:\s+(\d+)\s+kB$/m);
     const ram = rssMatch ? Number(rssMatch[1]) / 1024 : 0;
@@ -989,10 +1119,13 @@ function readRootProcessStats(pid) {
 
 function readCpuTimes() {
   try {
-    const stat = fs.readFileSync('/proc/stat', 'utf8').split('\n')[0];
+    const stat = fs.readFileSync("/proc/stat", "utf8").split("\n")[0];
     const parts = stat.trim().split(/\s+/);
-    if (parts[0] === 'cpu' && parts.length >= 5) {
-      const values = parts.slice(1).map((value) => Number.parseInt(value, 10)).filter(Number.isFinite);
+    if (parts[0] === "cpu" && parts.length >= 5) {
+      const values = parts
+        .slice(1)
+        .map((value) => Number.parseInt(value, 10))
+        .filter(Number.isFinite);
       const idle = (values[3] || 0) + (values[4] || 0);
       const total = values.reduce((sum, value) => sum + value, 0);
       if (total > 0) {
@@ -1052,7 +1185,7 @@ function updateSystemStatsFallback() {
   if (prevCpu) {
     const idleDelta = idle - prevCpu.idle;
     const totalDelta = total - prevCpu.total;
-    cpuUsage = totalDelta > 0 ? 100 * (1 - (idleDelta / totalDelta)) : 0;
+    cpuUsage = totalDelta > 0 ? 100 * (1 - idleDelta / totalDelta) : 0;
   }
   prevCpu = { idle, total };
   if (cpuUsage < 0) {
@@ -1074,7 +1207,7 @@ function updateSystemStats() {
     const rootStats = readRootProcessStats(mcProcess.pid);
     if (rootStats) {
       systemStats = { ...systemStats, ...rootStats };
-      broadcast({ type: 'stats', ...systemStats });
+      broadcast({ type: "stats", ...systemStats });
       return;
     }
   }
@@ -1090,15 +1223,15 @@ function updateSystemStats() {
       } else {
         updateSystemStatsFallback();
       }
-      broadcast({ type: 'stats', ...systemStats });
+      broadcast({ type: "stats", ...systemStats });
     });
   } else if (mcProcess && mcProcess.pid) {
     updateSystemStatsFallback();
-    broadcast({ type: 'stats', ...systemStats });
+    broadcast({ type: "stats", ...systemStats });
   } else {
     systemStats = { ...systemStats, cpu: 0, ram: 0 };
     prevRootProcess = null;
-    broadcast({ type: 'stats', ...systemStats });
+    broadcast({ type: "stats", ...systemStats });
   }
 }
 
@@ -1107,47 +1240,56 @@ function getUptime() {
     return null;
   }
   const seconds = Math.floor((Date.now() - startTime) / 1000);
-  return `${String(Math.floor(seconds / 3600)).padStart(2, '0')}:${String(Math.floor((seconds % 3600) / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+  return `${String(Math.floor(seconds / 3600)).padStart(2, "0")}:${String(Math.floor((seconds % 3600) / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
 function getServerPort() {
   const props = readProperties();
-  const port = Number(props['server-port']);
+  const port = Number(props["server-port"]);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    return '25565';
+    return "25565";
   }
   return String(port);
 }
 
 function hasHttpsConfig() {
-  return !!(CONFIG.httpsEnabled
-    && CONFIG.httpsKeyPath
-    && CONFIG.httpsCertPath
-    && fs.existsSync(CONFIG.httpsKeyPath)
-    && fs.existsSync(CONFIG.httpsCertPath));
+  return !!(
+    CONFIG.httpsEnabled &&
+    CONFIG.httpsKeyPath &&
+    CONFIG.httpsCertPath &&
+    fs.existsSync(CONFIG.httpsKeyPath) &&
+    fs.existsSync(CONFIG.httpsCertPath)
+  );
 }
 
 function normalizeDuckDnsDomain(value) {
-  return String(value || '')
+  return String(value || "")
     .trim()
     .toLowerCase()
-    .replace(/^https?:\/\//, '')
-    .replace(/\/.*$/, '')
-    .replace(/\.duckdns\.org$/, '')
-    .replace(/[^a-z0-9-]/g, '');
+    .replace(/^https?:\/\//, "")
+    .replace(/\/.*$/, "")
+    .replace(/\.duckdns\.org$/, "")
+    .replace(/[^a-z0-9-]/g, "");
 }
 
 function getDuckDnsHost() {
   const subdomain = normalizeDuckDnsDomain(CONFIG.duckDnsDomain);
-  return subdomain ? `${subdomain}.duckdns.org` : '';
+  return subdomain ? `${subdomain}.duckdns.org` : "";
 }
 
 function hasDuckDnsConfig() {
-  return !!(CONFIG.duckDnsEnabled && getDuckDnsHost() && String(CONFIG.duckDnsToken || '').trim());
+  return !!(
+    CONFIG.duckDnsEnabled &&
+    getDuckDnsHost() &&
+    String(CONFIG.duckDnsToken || "").trim()
+  );
 }
 
 function getDuckDnsIntervalMs() {
-  const minutes = Math.max(5, Number.parseInt(CONFIG.duckDnsIntervalMinutes, 10) || 10);
+  const minutes = Math.max(
+    5,
+    Number.parseInt(CONFIG.duckDnsIntervalMinutes, 10) || 10,
+  );
   return minutes * 60 * 1000;
 }
 
@@ -1156,20 +1298,20 @@ function getPublicPanelUrl() {
   if (!host) {
     return null;
   }
-  const protocol = hasHttpsConfig() ? 'https' : 'http';
-  const port = protocol === 'https' ? CONFIG.httpsPort : CONFIG.uiPort;
+  const protocol = hasHttpsConfig() ? "https" : "http";
+  const port = protocol === "https" ? CONFIG.httpsPort : CONFIG.uiPort;
   return `${protocol}://${host}:${port}`;
 }
 
-async function runDuckDnsUpdate(reason = 'scheduled') {
+async function runDuckDnsUpdate(reason = "scheduled") {
   if (!hasDuckDnsConfig()) {
     duckDnsState = {
       enabled: false,
       host: getDuckDnsHost(),
       lastAttemptAt: null,
       lastSuccessAt: null,
-      lastResult: 'disabled',
-      lastError: '',
+      lastResult: "disabled",
+      lastError: "",
       nextRunAt: null,
     };
     return duckDnsState;
@@ -1180,8 +1322,8 @@ async function runDuckDnsUpdate(reason = 'scheduled') {
   const attemptedAt = new Date().toISOString();
   const query = new URLSearchParams({
     domains: subdomain,
-    token: String(CONFIG.duckDnsToken || '').trim(),
-    ip: '',
+    token: String(CONFIG.duckDnsToken || "").trim(),
+    ip: "",
   });
 
   duckDnsState = {
@@ -1189,39 +1331,43 @@ async function runDuckDnsUpdate(reason = 'scheduled') {
     enabled: true,
     host,
     lastAttemptAt: attemptedAt,
-    lastError: '',
+    lastError: "",
     nextRunAt: new Date(Date.now() + getDuckDnsIntervalMs()).toISOString(),
   };
 
   try {
-    const result = String(await httpsGetRaw(`https://www.duckdns.org/update?${query.toString()}`)).trim();
+    const result = String(
+      await httpsGetRaw(`https://www.duckdns.org/update?${query.toString()}`),
+    ).trim();
     const ok = /^ok$/i.test(result);
     duckDnsState = {
       ...duckDnsState,
       enabled: true,
       host,
-      lastResult: result || 'empty',
-      lastError: ok ? '' : `DuckDNS returned ${result || 'empty'}`,
+      lastResult: result || "empty",
+      lastError: ok ? "" : `DuckDNS returned ${result || "empty"}`,
       lastSuccessAt: ok ? attemptedAt : duckDnsState.lastSuccessAt,
       nextRunAt: new Date(Date.now() + getDuckDnsIntervalMs()).toISOString(),
     };
-    addLog(ok
-      ? `DuckDNS updated ${host} (${reason})`
-      : `DuckDNS update failed for ${host}: ${result || 'empty'}`,
-    ok ? 'system' : 'warn');
+    addLog(
+      ok
+        ? `DuckDNS updated ${host} (${reason})`
+        : `DuckDNS update failed for ${host}: ${result || "empty"}`,
+      ok ? "system" : "warn",
+    );
   } catch (error) {
     duckDnsState = {
       ...duckDnsState,
       enabled: true,
       host,
-      lastResult: 'error',
+      lastResult: "error",
       lastError: error.message,
       nextRunAt: new Date(Date.now() + getDuckDnsIntervalMs()).toISOString(),
     };
-    addLog(`DuckDNS update failed for ${host}: ${error.message}`, 'warn');
+    addLog(`DuckDNS update failed for ${host}: ${error.message}`, "warn");
   }
 
-  broadcast({ type: 'status', ...buildStatusPayload() });
+  broadcast({ type: "status", ...buildStatusPayload() });
   return duckDnsState;
 }
 
@@ -1230,20 +1376,22 @@ async function maybeRunDuckDnsUpdate() {
     if (duckDnsState.enabled || duckDnsState.host) {
       duckDnsState = {
         enabled: false,
-        host: '',
+        host: "",
         lastAttemptAt: null,
         lastSuccessAt: null,
-        lastResult: 'disabled',
-        lastError: '',
+        lastResult: "disabled",
+        lastError: "",
         nextRunAt: null,
       };
-      broadcast({ type: 'status', ...buildStatusPayload() });
+      broadcast({ type: "status", ...buildStatusPayload() });
     }
     return;
   }
-  const lastAttempt = duckDnsState.lastAttemptAt ? Date.parse(duckDnsState.lastAttemptAt) : 0;
-  if (!lastAttempt || (Date.now() - lastAttempt) >= getDuckDnsIntervalMs()) {
-    await runDuckDnsUpdate('scheduled');
+  const lastAttempt = duckDnsState.lastAttemptAt
+    ? Date.parse(duckDnsState.lastAttemptAt)
+    : 0;
+  if (!lastAttempt || Date.now() - lastAttempt >= getDuckDnsIntervalMs()) {
+    await runDuckDnsUpdate("scheduled");
   }
 }
 
@@ -1252,35 +1400,43 @@ function getNetworkInfo() {
   const addresses = [];
   Object.values(interfaces).forEach((items) => {
     (items || []).forEach((item) => {
-      if (!item || item.internal || item.family !== 'IPv4') {
+      if (!item || item.internal || item.family !== "IPv4") {
         return;
       }
       addresses.push(item.address);
     });
   });
-  const lanIp = addresses.find((ip) => (
-    ip.startsWith('192.168.')
-    || ip.startsWith('10.')
-    || /^172\.(1[6-9]|2\d|3[0-1])\./.test(ip)
-  )) || addresses[0] || '127.0.0.1';
+  const lanIp =
+    addresses.find(
+      (ip) =>
+        ip.startsWith("192.168.") ||
+        ip.startsWith("10.") ||
+        /^172\.(1[6-9]|2\d|3[0-1])\./.test(ip),
+    ) ||
+    addresses[0] ||
+    "127.0.0.1";
   return {
     lanIp,
     addresses,
     mcPort: getServerPort(),
     panelPort: CONFIG.uiPort,
     panelSecurePort: hasHttpsConfig() ? CONFIG.httpsPort : null,
-    panelProtocol: hasHttpsConfig() ? 'https' : 'http',
+    panelProtocol: hasHttpsConfig() ? "https" : "http",
     duckDnsEnabled: hasDuckDnsConfig(),
     duckDnsHost: getDuckDnsHost(),
     publicPanelUrl: getPublicPanelUrl(),
-    duckDnsStatus: duckDnsState.lastError ? `error: ${duckDnsState.lastError}` : duckDnsState.lastResult,
+    duckDnsStatus: duckDnsState.lastError
+      ? `error: ${duckDnsState.lastError}`
+      : duckDnsState.lastResult,
     duckDnsLastSuccessAt: duckDnsState.lastSuccessAt,
     duckDnsNextRunAt: duckDnsState.nextRunAt,
   };
 }
 
-function addLog(rawText, type = 'log') {
-  const text = String(rawText || '').replace(/\r/g, '').trim();
+function addLog(rawText, type = "log") {
+  const text = String(rawText || "")
+    .replace(/\r/g, "")
+    .trim();
   if (!text) {
     return;
   }
@@ -1289,57 +1445,63 @@ function addLog(rawText, type = 'log') {
 
   const joinMatch = text.match(/:\s+(\w+) joined the game/);
   const leaveMatch = text.match(/:\s+(\w+) left the game/);
-  const listMatch = text.match(/There are \d+ of a max of \d+ players online:(.*)/);
+  const listMatch = text.match(
+    /There are \d+ of a max of \d+ players online:(.*)/,
+  );
 
   if (joinMatch) {
     onlinePlayers[joinMatch[1]] = { name: joinMatch[1], joined: Date.now() };
-    broadcast({ type: 'players', players: Object.values(onlinePlayers) });
+    broadcast({ type: "players", players: Object.values(onlinePlayers) });
   }
   if (leaveMatch) {
     delete onlinePlayers[leaveMatch[1]];
-    broadcast({ type: 'players', players: Object.values(onlinePlayers) });
+    broadcast({ type: "players", players: Object.values(onlinePlayers) });
   }
   if (listMatch) {
-    const names = listMatch[1].split(',').map((value) => value.trim()).filter(Boolean);
+    const names = listMatch[1]
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
     onlinePlayers = {};
     names.forEach((name) => {
       onlinePlayers[name] = { name, joined: Date.now() };
     });
-    broadcast({ type: 'players', players: Object.values(onlinePlayers) });
+    broadcast({ type: "players", players: Object.values(onlinePlayers) });
   }
 
   const entry = {
     text,
     type,
-    time: new Date().toLocaleTimeString('en-US', { hour12: false }),
+    time: new Date().toLocaleTimeString("en-US", { hour12: false }),
   };
   logHistory.push(entry);
   if (logHistory.length > LOG_HISTORY_LIMIT) {
     logHistory.shift();
   }
-  broadcast({ type: 'log', ...entry });
+  broadcast({ type: "log", ...entry });
 }
 
 function appendCrashLog(reason, code, signal) {
-  const crashLogPath = path.join(CONFIG.serverDir, 'crash.log');
+  const crashLogPath = path.join(CONFIG.serverDir, "crash.log");
   ensureDir(path.dirname(crashLogPath));
   const now = new Date().toISOString();
-  const tail = logHistory.slice(-100)
+  const tail = logHistory
+    .slice(-100)
     .map((entry) => `[${entry.time}] [${entry.type}] ${entry.text}`)
-    .join('\n');
+    .join("\n");
   const block = [
-    '============================================================',
+    "============================================================",
     `Timestamp: ${now}`,
     `Reason: ${reason}`,
-    `Exit code: ${code == null ? 'n/a' : code}`,
-    `Signal: ${signal || 'n/a'}`,
-    '',
-    'Recent log tail:',
-    tail || '(no recent log lines)',
-    '',
-  ].join('\n');
+    `Exit code: ${code == null ? "n/a" : code}`,
+    `Signal: ${signal || "n/a"}`,
+    "",
+    "Recent log tail:",
+    tail || "(no recent log lines)",
+    "",
+  ].join("\n");
   fs.appendFileSync(crashLogPath, `${block}\n`);
-  updateIntegrityRecord(crashLogPath, { label: 'crash.log' });
+  updateIntegrityRecord(crashLogPath, { label: "crash.log" });
   crashState = {
     lastCrashAt: now,
     lastCrashReason: reason,
@@ -1379,13 +1541,17 @@ function toManagedFileInfo(spec) {
     exists,
     size: stat ? stat.size : 0,
     sha256: integrity ? integrity.sha256 : null,
-    updatedAt: integrity ? integrity.updatedAt : (stat ? stat.mtime.toISOString() : null),
+    updatedAt: integrity
+      ? integrity.updatedAt
+      : stat
+        ? stat.mtime.toISOString()
+        : null,
   };
 }
 
 function getWorldDir() {
   const props = readProperties();
-  const worldName = props['level-name'] || 'world';
+  const worldName = props["level-name"] || "world";
   return path.join(CONFIG.serverDir, worldName);
 }
 
@@ -1393,7 +1559,8 @@ function listSimpleDir(dirPath, allowExtensions = null) {
   if (!fs.existsSync(dirPath)) {
     return [];
   }
-  return fs.readdirSync(dirPath)
+  return fs
+    .readdirSync(dirPath)
     .filter((name) => {
       if (!allowExtensions) {
         return true;
@@ -1418,10 +1585,10 @@ function getManagedFilesOverview() {
   return {
     files: MANAGED_TEXT_FILES.map(toManagedFileInfo),
     directories: {
-      plugins: listSimpleDir(path.join(CONFIG.serverDir, 'plugins'), ['.jar']),
-      mods: listSimpleDir(path.join(CONFIG.serverDir, 'mods'), ['.jar']),
-      datapacks: listSimpleDir(path.join(getWorldDir(), 'datapacks')),
-      logs: listSimpleDir(path.join(CONFIG.serverDir, 'logs'), ['.log', '.gz']),
+      plugins: listSimpleDir(path.join(CONFIG.serverDir, "plugins"), [".jar"]),
+      mods: listSimpleDir(path.join(CONFIG.serverDir, "mods"), [".jar"]),
+      datapacks: listSimpleDir(path.join(getWorldDir(), "datapacks")),
+      logs: listSimpleDir(path.join(CONFIG.serverDir, "logs"), [".log", ".gz"]),
     },
   };
 }
@@ -1434,22 +1601,24 @@ function directorySize(dirPath) {
   if (!stat.isDirectory()) {
     return stat.size;
   }
-  return fs.readdirSync(dirPath).reduce((sum, name) => sum + directorySize(path.join(dirPath, name)), 0);
+  return fs
+    .readdirSync(dirPath)
+    .reduce((sum, name) => sum + directorySize(path.join(dirPath, name)), 0);
 }
 
-function createBackup(label = 'manual backup') {
+function createBackup(label = "manual backup") {
   if (!fs.existsSync(CONFIG.serverDir)) {
-    throw new Error('Server directory does not exist yet');
+    throw new Error("Server directory does not exist yet");
   }
-  const id = new Date().toISOString().replace(/[:.]/g, '-');
+  const id = new Date().toISOString().replace(/[:.]/g, "-");
   const backupRoot = path.join(BACKUP_DIR, id);
-  const targetDir = path.join(backupRoot, 'server');
+  const targetDir = path.join(backupRoot, "server");
   ensureDir(backupRoot);
 
   if (mcProcess && mcProcess.stdin.writable) {
     try {
-      mcProcess.stdin.write('save-all flush\n');
-      addLog('> save-all flush', 'cmd');
+      mcProcess.stdin.write("save-all flush\n");
+      addLog("> save-all flush", "cmd");
     } catch {
       // Ignore best-effort save flush failures.
     }
@@ -1461,11 +1630,14 @@ function createBackup(label = 'manual backup') {
     label,
     createdAt: new Date().toISOString(),
     serverDir: CONFIG.serverDir,
-    serverType: CONFIG.serverType || '',
-    serverVersion: CONFIG.serverVersion || '',
+    serverType: CONFIG.serverType || "",
+    serverVersion: CONFIG.serverVersion || "",
     size: directorySize(targetDir),
   };
-  fs.writeFileSync(path.join(backupRoot, 'meta.json'), JSON.stringify(meta, null, 2));
+  fs.writeFileSync(
+    path.join(backupRoot, "meta.json"),
+    JSON.stringify(meta, null, 2),
+  );
   pruneBackups();
   return meta;
 }
@@ -1474,39 +1646,50 @@ function listBackups() {
   if (!fs.existsSync(BACKUP_DIR)) {
     return [];
   }
-  return fs.readdirSync(BACKUP_DIR)
+  return fs
+    .readdirSync(BACKUP_DIR)
     .map((id) => {
-      const metaPath = path.join(BACKUP_DIR, id, 'meta.json');
+      const metaPath = path.join(BACKUP_DIR, id, "meta.json");
       if (!fs.existsSync(metaPath)) {
         return null;
       }
       try {
-        return JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+        return JSON.parse(fs.readFileSync(metaPath, "utf8"));
       } catch {
         return null;
       }
     })
     .filter(Boolean)
-    .sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)));
+    .sort((left, right) =>
+      String(right.createdAt).localeCompare(String(left.createdAt)),
+    );
 }
 
 function pruneBackups() {
-  const retention = Math.max(1, Number.parseInt(CONFIG.backupRetention, 10) || 5);
+  const retention = Math.max(
+    1,
+    Number.parseInt(CONFIG.backupRetention, 10) || 5,
+  );
   const backups = listBackups();
   backups.slice(retention).forEach((backup) => {
-    fs.rmSync(path.join(BACKUP_DIR, backup.id), { recursive: true, force: true });
+    fs.rmSync(path.join(BACKUP_DIR, backup.id), {
+      recursive: true,
+      force: true,
+    });
   });
 }
 
 function restoreBackup(id) {
-  const sourceDir = path.join(BACKUP_DIR, id, 'server');
+  const sourceDir = path.join(BACKUP_DIR, id, "server");
   if (!fs.existsSync(sourceDir)) {
-    throw new Error('Backup not found');
+    throw new Error("Backup not found");
   }
   if (mcProcess) {
-    throw new Error('Stop the server before restoring a backup');
+    throw new Error("Stop the server before restoring a backup");
   }
-  const preRestore = fs.existsSync(CONFIG.serverDir) ? createBackup(`pre-restore ${id}`) : null;
+  const preRestore = fs.existsSync(CONFIG.serverDir)
+    ? createBackup(`pre-restore ${id}`)
+    : null;
   fs.rmSync(CONFIG.serverDir, { recursive: true, force: true });
   ensureDir(CONFIG.serverDir);
   fs.cpSync(sourceDir, CONFIG.serverDir, { recursive: true, force: true });
@@ -1516,13 +1699,16 @@ function restoreBackup(id) {
       updateIntegrityRecord(filePath, { label: spec.label });
     }
   });
-  return { restoredId: id, preRestoreBackupId: preRestore ? preRestore.id : null };
+  return {
+    restoredId: id,
+    preRestoreBackupId: preRestore ? preRestore.id : null,
+  };
 }
 
 function deleteBackup(id) {
   const backupPath = path.join(BACKUP_DIR, id);
   if (!fs.existsSync(backupPath)) {
-    throw new Error('Backup not found');
+    throw new Error("Backup not found");
   }
   fs.rmSync(backupPath, { recursive: true, force: true });
 }
@@ -1532,7 +1718,7 @@ function readJsonArray(filePath) {
     if (!fs.existsSync(filePath)) {
       return [];
     }
-    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
     return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
@@ -1547,9 +1733,9 @@ function writeJsonArray(filePath, value) {
 
 function getAdminFilePath(type) {
   const map = {
-    whitelist: path.join(CONFIG.serverDir, 'whitelist.json'),
-    ops: path.join(CONFIG.serverDir, 'ops.json'),
-    bans: path.join(CONFIG.serverDir, 'banned-players.json'),
+    whitelist: path.join(CONFIG.serverDir, "whitelist.json"),
+    ops: path.join(CONFIG.serverDir, "ops.json"),
+    bans: path.join(CONFIG.serverDir, "banned-players.json"),
   };
   return map[type] || null;
 }
@@ -1557,9 +1743,11 @@ function getAdminFilePath(type) {
 function readAdminList(type) {
   const filePath = getAdminFilePath(type);
   if (!filePath) {
-    throw new Error('Unknown admin list');
+    throw new Error("Unknown admin list");
   }
-  return readJsonArray(filePath).sort((left, right) => String(left.name || '').localeCompare(String(right.name || '')));
+  return readJsonArray(filePath).sort((left, right) =>
+    String(left.name || "").localeCompare(String(right.name || "")),
+  );
 }
 
 const PANEL_USER_AGENT = `TermuCraft/${APP_VERSION} (+https://github.com/wafflebyte8-hue/TermuCraft)`;
@@ -1568,51 +1756,63 @@ const UPSTREAM_TIMEOUT_MS = 15000;
 async function httpsGetRaw(url, depth = 0) {
   return new Promise((resolve, reject) => {
     if (depth > 5) {
-      reject(new Error('Too many redirects'));
+      reject(new Error("Too many redirects"));
       return;
     }
-    const mod = url.startsWith('https:') ? https : http;
-    const request = mod.get(url, {
-      headers: {
-        'User-Agent': PANEL_USER_AGENT,
-        'Accept-Encoding': 'gzip',
+    const mod = url.startsWith("https:") ? https : http;
+    const request = mod.get(
+      url,
+      {
+        headers: {
+          "User-Agent": PANEL_USER_AGENT,
+          "Accept-Encoding": "gzip",
+        },
       },
-    }, (res) => {
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        res.resume();
-        const nextUrl = new URL(res.headers.location, url).toString();
-        httpsGetRaw(nextUrl, depth + 1).then(resolve).catch(reject);
-        return;
-      }
-      const chunks = [];
-      res.on('data', (chunk) => {
-        chunks.push(chunk);
-      });
-      res.on('end', () => {
-        const finish = (error, buffer) => {
-          if (error) {
-            reject(error);
-            return;
-          }
-          if (res.statusCode && res.statusCode >= 400) {
-            reject(new Error(`HTTP ${res.statusCode} from ${new URL(url).host}`));
-            return;
-          }
-          resolve(buffer.toString('utf8'));
-        };
-        const body = Buffer.concat(chunks);
-        if (res.headers['content-encoding'] === 'gzip') {
-          zlib.gunzip(body, finish);
-        } else {
-          finish(null, body);
+      (res) => {
+        if (
+          res.statusCode >= 300 &&
+          res.statusCode < 400 &&
+          res.headers.location
+        ) {
+          res.resume();
+          const nextUrl = new URL(res.headers.location, url).toString();
+          httpsGetRaw(nextUrl, depth + 1)
+            .then(resolve)
+            .catch(reject);
+          return;
         }
-      });
-      res.on('error', reject);
-    });
+        const chunks = [];
+        res.on("data", (chunk) => {
+          chunks.push(chunk);
+        });
+        res.on("end", () => {
+          const finish = (error, buffer) => {
+            if (error) {
+              reject(error);
+              return;
+            }
+            if (res.statusCode && res.statusCode >= 400) {
+              reject(
+                new Error(`HTTP ${res.statusCode} from ${new URL(url).host}`),
+              );
+              return;
+            }
+            resolve(buffer.toString("utf8"));
+          };
+          const body = Buffer.concat(chunks);
+          if (res.headers["content-encoding"] === "gzip") {
+            zlib.gunzip(body, finish);
+          } else {
+            finish(null, body);
+          }
+        });
+        res.on("error", reject);
+      },
+    );
     request.setTimeout(UPSTREAM_TIMEOUT_MS, () => {
       request.destroy(new Error(`Timed out contacting ${new URL(url).host}`));
     });
-    request.on('error', reject);
+    request.on("error", reject);
   });
 }
 
@@ -1632,7 +1832,11 @@ const upstreamCache = new Map();
 const VERSION_CACHE_TTL_MS = 10 * 60 * 1000;
 
 async function cachedUpstream(key, ttlMs, fetcher) {
-  const entry = upstreamCache.get(key) || { value: undefined, fetchedAt: 0, promise: null };
+  const entry = upstreamCache.get(key) || {
+    value: undefined,
+    fetchedAt: 0,
+    promise: null,
+  };
   if (entry.value !== undefined && Date.now() - entry.fetchedAt < ttlMs) {
     return entry.value;
   }
@@ -1657,36 +1861,45 @@ async function cachedUpstream(key, ttlMs, fetcher) {
 }
 
 function parseXmlVersions(xmlText) {
-  return [...String(xmlText).matchAll(/<version>([^<]+)<\/version>/g)].map((match) => match[1]);
+  return [...String(xmlText).matchAll(/<version>([^<]+)<\/version>/g)].map(
+    (match) => match[1],
+  );
 }
 
 async function resolveMinecraftProfile(name) {
-  const raw = await httpsGet(`https://api.mojang.com/users/profiles/minecraft/${encodeURIComponent(name)}`);
+  const raw = await httpsGet(
+    `https://api.mojang.com/users/profiles/minecraft/${encodeURIComponent(name)}`,
+  );
   if (!raw || !raw.id || !raw.name) {
-    throw new Error('Could not resolve that Minecraft username');
+    throw new Error("Could not resolve that Minecraft username");
   }
   return {
-    uuid: raw.id.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5'),
+    uuid: raw.id.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, "$1-$2-$3-$4-$5"),
     name: raw.name,
   };
 }
 
 async function addAdminEntry(type, payload) {
   const filePath = getAdminFilePath(type);
-  const username = String(payload.name || '').trim();
+  const username = String(payload.name || "").trim();
   if (!filePath || !username) {
-    throw new Error('Missing username');
+    throw new Error("Missing username");
   }
 
   const list = readJsonArray(filePath);
-  if (list.some((entry) => String(entry.name || '').toLowerCase() === username.toLowerCase())) {
-    throw new Error('Player is already in that list');
+  if (
+    list.some(
+      (entry) =>
+        String(entry.name || "").toLowerCase() === username.toLowerCase(),
+    )
+  ) {
+    throw new Error("Player is already in that list");
   }
 
   const profile = await resolveMinecraftProfile(username);
   let entry;
 
-  if (type === 'ops') {
+  if (type === "ops") {
     entry = {
       uuid: profile.uuid,
       name: profile.name,
@@ -1695,32 +1908,32 @@ async function addAdminEntry(type, payload) {
     };
     if (mcProcess) {
       mcProcess.stdin.write(`op ${profile.name}\n`);
-      addLog(`> op ${profile.name}`, 'cmd');
+      addLog(`> op ${profile.name}`, "cmd");
     }
-  } else if (type === 'whitelist') {
+  } else if (type === "whitelist") {
     entry = {
       uuid: profile.uuid,
       name: profile.name,
     };
     if (mcProcess) {
       mcProcess.stdin.write(`whitelist add ${profile.name}\n`);
-      addLog(`> whitelist add ${profile.name}`, 'cmd');
+      addLog(`> whitelist add ${profile.name}`, "cmd");
     }
-  } else if (type === 'bans') {
+  } else if (type === "bans") {
     entry = {
       uuid: profile.uuid,
       name: profile.name,
       created: new Date().toISOString(),
-      source: ACCESS.profile.handle || 'termucraft',
-      expires: 'forever',
-      reason: String(payload.reason || 'Banned by admin'),
+      source: ACCESS.profile.handle || "termucraft",
+      expires: "forever",
+      reason: String(payload.reason || "Banned by admin"),
     };
     if (mcProcess) {
       mcProcess.stdin.write(`ban ${profile.name} ${entry.reason}\n`);
-      addLog(`> ban ${profile.name} ${entry.reason}`, 'cmd');
+      addLog(`> ban ${profile.name} ${entry.reason}`, "cmd");
     }
   } else {
-    throw new Error('Unknown admin list');
+    throw new Error("Unknown admin list");
   }
 
   list.push(entry);
@@ -1730,27 +1943,30 @@ async function addAdminEntry(type, payload) {
 
 function removeAdminEntry(type, name) {
   const filePath = getAdminFilePath(type);
-  const username = String(name || '').trim();
+  const username = String(name || "").trim();
   if (!filePath || !username) {
-    throw new Error('Missing username');
+    throw new Error("Missing username");
   }
 
   const list = readJsonArray(filePath);
-  const filtered = list.filter((entry) => String(entry.name || '').toLowerCase() !== username.toLowerCase());
+  const filtered = list.filter(
+    (entry) =>
+      String(entry.name || "").toLowerCase() !== username.toLowerCase(),
+  );
   if (filtered.length === list.length) {
-    throw new Error('Player not found');
+    throw new Error("Player not found");
   }
 
   if (mcProcess) {
-    if (type === 'ops') {
+    if (type === "ops") {
       mcProcess.stdin.write(`deop ${username}\n`);
-      addLog(`> deop ${username}`, 'cmd');
-    } else if (type === 'whitelist') {
+      addLog(`> deop ${username}`, "cmd");
+    } else if (type === "whitelist") {
       mcProcess.stdin.write(`whitelist remove ${username}\n`);
-      addLog(`> whitelist remove ${username}`, 'cmd');
-    } else if (type === 'bans') {
+      addLog(`> whitelist remove ${username}`, "cmd");
+    } else if (type === "bans") {
       mcProcess.stdin.write(`pardon ${username}\n`);
-      addLog(`> pardon ${username}`, 'cmd');
+      addLog(`> pardon ${username}`, "cmd");
     }
   }
 
@@ -1758,34 +1974,41 @@ function removeAdminEntry(type, name) {
 }
 
 function validateScheduleTime(value) {
-  return value === '' || /^\d{2}:\d{2}$/.test(value);
+  return value === "" || /^\d{2}:\d{2}$/.test(value);
 }
 
 function applyPreset(name) {
   const preset = PRESETS[name];
   if (!preset) {
-    throw new Error('Unknown preset');
+    throw new Error("Unknown preset");
   }
   const serverWasRunning = !!mcProcess;
-  createPanelSnapshot(`pre-preset ${name}`, 'preset');
+  createPanelSnapshot(`pre-preset ${name}`, "preset");
   CONFIG.preset = name;
   CONFIG.memory = preset.memory;
   saveConfig();
   writeProperties(preset.properties);
-  broadcast({ type: 'config', config: getPublicConfig() });
-  broadcast({ type: 'status', ...buildStatusPayload() });
+  broadcast({ type: "config", config: getPublicConfig() });
+  broadcast({ type: "status", ...buildStatusPayload() });
   return {
     preset: name,
     config: getPublicConfig(),
     properties: readProperties(),
-    notice: serverWasRunning ? 'Memory changes will take effect after the next server restart.' : null,
+    notice: serverWasRunning
+      ? "Memory changes will take effect after the next server restart."
+      : null,
   };
 }
 
 function getJavaVersion() {
-  const result = spawnSync(CONFIG.javaPath || 'java', ['-version'], { encoding: 'utf8' });
-  const output = `${result.stdout || ''}\n${result.stderr || ''}`.trim().split('\n')[0].trim();
-  return output || 'Unavailable';
+  const result = spawnSync(CONFIG.javaPath || "java", ["-version"], {
+    encoding: "utf8",
+  });
+  const output = `${result.stdout || ""}\n${result.stderr || ""}`
+    .trim()
+    .split("\n")[0]
+    .trim();
+  return output || "Unavailable";
 }
 
 function getInstalledJavaMajor(versionLine = getJavaVersion()) {
@@ -1799,9 +2022,9 @@ function getInstalledJavaMajor(versionLine = getJavaVersion()) {
 }
 
 function suggestTermuxJdkPackage(requiredMajor) {
-  if (requiredMajor >= 22) return 'openjdk-25';
-  if (requiredMajor >= 18) return 'openjdk-21';
-  return 'openjdk-17';
+  if (requiredMajor >= 22) return "openjdk-25";
+  if (requiredMajor >= 18) return "openjdk-21";
+  return "openjdk-17";
 }
 
 // Mojang's per-version metadata declares the Java major each Minecraft
@@ -1810,11 +2033,17 @@ function suggestTermuxJdkPackage(requiredMajor) {
 async function lookupRequiredJavaMajor(mcVersion) {
   try {
     const manifest = await getMojangManifest();
-    const entry = (manifest.versions || []).find((item) => item.id === mcVersion);
+    const entry = (manifest.versions || []).find(
+      (item) => item.id === mcVersion,
+    );
     if (!entry?.url) {
       return 0;
     }
-    const detail = await cachedUpstream(`mojang:version:${mcVersion}`, 24 * 60 * 60 * 1000, () => httpsGet(entry.url));
+    const detail = await cachedUpstream(
+      `mojang:version:${mcVersion}`,
+      24 * 60 * 60 * 1000,
+      () => httpsGet(entry.url),
+    );
     return Number(detail?.javaVersion?.majorVersion) || 0;
   } catch {
     return 0;
@@ -1822,97 +2051,119 @@ async function lookupRequiredJavaMajor(mcVersion) {
 }
 
 function explainCrash(outputLines) {
-  const text = outputLines.join('\n');
+  const text = outputLines.join("\n");
   const classVer = text.match(/class file version (\d+)/);
   if (classVer || /UnsupportedClassVersionError/.test(text)) {
     const required = classVer ? Number(classVer[1]) - 44 : 0;
     const installed = getInstalledJavaMajor();
-    const need = required ? `Java ${required}+` : 'a newer Java';
-    return `This server version needs ${need} but Java ${installed || 'unknown'} is installed. In Termux run: pkg install ${suggestTermuxJdkPackage(required || 22)}`;
+    const need = required ? `Java ${required}+` : "a newer Java";
+    return `This server version needs ${need} but Java ${installed || "unknown"} is installed. In Termux run: pkg install ${suggestTermuxJdkPackage(required || 22)}`;
   }
-  if (/java\.lang\.OutOfMemoryError|Could not reserve enough space/i.test(text)) {
-    return 'Java could not get enough memory. Lower the RAM allocation in Control, or close other apps.';
+  if (
+    /java\.lang\.OutOfMemoryError|Could not reserve enough space/i.test(text)
+  ) {
+    return "Java could not get enough memory. Lower the RAM allocation in Control, or close other apps.";
   }
   if (/Invalid or corrupt jarfile|zip END header not found/i.test(text)) {
-    return 'The server jar looks corrupt or incomplete. Re-download the server version in Builds.';
+    return "The server jar looks corrupt or incomplete. Re-download the server version in Builds.";
   }
   if (/Failed to bind to port|Address already in use/i.test(text)) {
-    return 'The Minecraft port is already in use. Another server instance is probably still running.';
+    return "The Minecraft port is already in use. Another server instance is probably still running.";
   }
-  return '';
+  return "";
 }
 
 function collectValidation() {
   const totalRamMB = Math.round(os.totalmem() / 1024 / 1024);
-  const memoryMatch = String(CONFIG.memory || '').trim().toUpperCase().match(/^(\d+(?:\.\d+)?)([MG])$/);
+  const memoryMatch = String(CONFIG.memory || "")
+    .trim()
+    .toUpperCase()
+    .match(/^(\d+(?:\.\d+)?)([MG])$/);
   const configuredRamMB = memoryMatch
-    ? Number(memoryMatch[1]) * (memoryMatch[2] === 'G' ? 1024 : 1)
+    ? Number(memoryMatch[1]) * (memoryMatch[2] === "G" ? 1024 : 1)
     : 0;
   const javaVersionLine = getJavaVersion();
   const installedJavaMajor = getInstalledJavaMajor(javaVersionLine);
   const requiredJavaMajor = Number(CONFIG.requiredJavaMajor) || 0;
   const checks = [
     {
-      label: 'Termux environment',
-      ok: fs.existsSync('/data/data/com.termux'),
-      detail: fs.existsSync('/data/data/com.termux') ? 'Detected' : 'Not running inside Termux',
+      label: "Termux environment",
+      ok: fs.existsSync("/data/data/com.termux"),
+      detail: fs.existsSync("/data/data/com.termux")
+        ? "Detected"
+        : "Not running inside Termux",
     },
     {
-      label: 'Java runtime',
-      ok: javaVersionLine !== 'Unavailable',
+      label: "Java runtime",
+      ok: javaVersionLine !== "Unavailable",
       detail: javaVersionLine,
     },
     {
-      label: 'Java fits server version',
-      ok: !requiredJavaMajor || !installedJavaMajor || installedJavaMajor >= requiredJavaMajor,
+      label: "Java fits server version",
+      ok:
+        !requiredJavaMajor ||
+        !installedJavaMajor ||
+        installedJavaMajor >= requiredJavaMajor,
       detail: requiredJavaMajor
-        ? `Server needs Java ${requiredJavaMajor}+, installed: ${installedJavaMajor ? `Java ${installedJavaMajor}` : 'unknown'}`
-        : 'No requirement recorded yet (download a server version to check)',
+        ? `Server needs Java ${requiredJavaMajor}+, installed: ${installedJavaMajor ? `Java ${installedJavaMajor}` : "unknown"}`
+        : "No requirement recorded yet (download a server version to check)",
     },
     {
-      label: 'Node.js runtime',
+      label: "Node.js runtime",
       ok: true,
       detail: process.version,
     },
     {
-      label: 'Server directory',
+      label: "Server directory",
       ok: fs.existsSync(CONFIG.serverDir),
       detail: CONFIG.serverDir,
     },
     {
-      label: 'Server JAR',
+      label: "Server JAR",
       ok: fs.existsSync(path.join(CONFIG.serverDir, CONFIG.serverJar)),
       detail: path.join(CONFIG.serverDir, CONFIG.serverJar),
     },
-      {
-        label: 'Panel auth',
-        ok: true,
-        detail: ACCESS.authRequired ? (ACCESS.flags?.bootstrap ? 'Bootstrap credentials still active' : `Configured for ${ACCESS.profile?.handle || 'pending setup'}`) : 'Disabled in this build',
-      },
     {
-      label: 'Wake lock command',
-      ok: commandExists('termux-wake-lock'),
-      detail: commandExists('termux-wake-lock') ? 'Available' : 'Install Termux:API for wake lock support',
+      label: "Panel auth",
+      ok: true,
+      detail: ACCESS.authRequired
+        ? ACCESS.flags?.bootstrap
+          ? "Bootstrap credentials still active"
+          : `Configured for ${ACCESS.profile?.handle || "pending setup"}`
+        : "Disabled in this build",
     },
     {
-      label: 'tmux',
-      ok: commandExists('tmux'),
-      detail: commandExists('tmux') ? 'Available' : 'Install tmux for background sessions',
+      label: "Wake lock command",
+      ok: commandExists("termux-wake-lock"),
+      detail: commandExists("termux-wake-lock")
+        ? "Available"
+        : "Install Termux:API for wake lock support",
     },
     {
-      label: 'Checksums manifest',
-      ok: fs.existsSync(path.join(UI_DIR, '.checksums')),
-      detail: fs.existsSync(path.join(UI_DIR, '.checksums')) ? 'Installer checksum file present' : 'No checksum manifest found',
+      label: "tmux",
+      ok: commandExists("tmux"),
+      detail: commandExists("tmux")
+        ? "Available"
+        : "Install tmux for background sessions",
     },
     {
-      label: 'DuckDNS',
-      ok: !CONFIG.duckDnsEnabled || !!(getDuckDnsHost() && String(CONFIG.duckDnsToken || '').trim()),
+      label: "Checksums manifest",
+      ok: fs.existsSync(path.join(UI_DIR, ".checksums")),
+      detail: fs.existsSync(path.join(UI_DIR, ".checksums"))
+        ? "Installer checksum file present"
+        : "No checksum manifest found",
+    },
+    {
+      label: "DuckDNS",
+      ok:
+        !CONFIG.duckDnsEnabled ||
+        !!(getDuckDnsHost() && String(CONFIG.duckDnsToken || "").trim()),
       detail: CONFIG.duckDnsEnabled
-        ? `${getDuckDnsHost() || 'domain missing'} | ${duckDnsState.lastError ? duckDnsState.lastError : duckDnsState.lastResult}`
-        : 'Disabled',
+        ? `${getDuckDnsHost() || "domain missing"} | ${duckDnsState.lastError ? duckDnsState.lastError : duckDnsState.lastResult}`
+        : "Disabled",
     },
     {
-      label: 'Panel snapshots',
+      label: "Panel snapshots",
       ok: true,
       detail: `${listPanelSnapshots().length} stored`,
     },
@@ -1945,31 +2196,43 @@ function attachMcProcess(processHandle) {
       }
     }
   };
-  mcProcess.stdout.on('data', (chunk) => {
-    String(chunk).split('\n').forEach((line) => remember(line, 'log'));
+  mcProcess.stdout.on("data", (chunk) => {
+    String(chunk)
+      .split("\n")
+      .forEach((line) => remember(line, "log"));
   });
-  mcProcess.stderr.on('data', (chunk) => {
-    String(chunk).split('\n').forEach((line) => remember(line, 'warn'));
+  mcProcess.stderr.on("data", (chunk) => {
+    String(chunk)
+      .split("\n")
+      .forEach((line) => remember(line, "warn"));
   });
-  mcProcess.on('error', (error) => {
-    addLog(`Process error: ${error.message}`, 'error');
+  mcProcess.on("error", (error) => {
+    addLog(`Process error: ${error.message}`, "error");
   });
-  mcProcess.on('exit', (code, signal) => {
+  mcProcess.on("exit", (code, signal) => {
     const manualRestart = restartRequested;
     const expected = expectedExit;
     const crashed = !expected && !manualRestart;
     const runMs = startTime ? Date.now() - startTime : 0;
     if (crashed) {
-      let reason = signal ? `Unexpected signal ${signal}` : `Unexpected exit ${code ?? 'unknown'}`;
+      let reason = signal
+        ? `Unexpected signal ${signal}`
+        : `Unexpected exit ${code ?? "unknown"}`;
       const hint = explainCrash(recentOutput);
       if (hint) {
         reason = `${reason} — ${hint}`;
-        addLog(`--- ${hint} ---`, 'error');
+        addLog(`--- ${hint} ---`, "error");
       }
       appendCrashLog(reason, code, signal);
-      addLog(`--- Crash detected: ${signal ? `signal ${signal}` : `exit ${code ?? 'unknown'}`} ---`, 'error');
+      addLog(
+        `--- Crash detected: ${signal ? `signal ${signal}` : `exit ${code ?? "unknown"}`} ---`,
+        "error",
+      );
     } else {
-      addLog(`--- Server stopped (exit ${code ?? signal ?? 'unknown'}) ---`, 'system');
+      addLog(
+        `--- Server stopped (exit ${code ?? signal ?? "unknown"}) ---`,
+        "system",
+      );
     }
     if (pidusage) {
       try {
@@ -1984,10 +2247,10 @@ function attachMcProcess(processHandle) {
     expectedExit = false;
     restartRequested = false;
     updateSystemStats();
-    broadcast({ type: 'status', ...buildStatusPayload() });
+    broadcast({ type: "status", ...buildStatusPayload() });
 
     if (manualRestart) {
-      scheduleRestart(1, 'manual restart');
+      scheduleRestart(1, "manual restart");
       return;
     }
     if (crashed && CONFIG.autoRestart) {
@@ -1999,10 +2262,16 @@ function attachMcProcess(processHandle) {
         rapidCrashCount = 0;
       }
       if (rapidCrashCount >= 3) {
-        addLog('--- Auto-restart paused: the server crashed 3 times right after starting. Fix the cause above, then press Start. ---', 'error');
+        addLog(
+          "--- Auto-restart paused: the server crashed 3 times right after starting. Fix the cause above, then press Start. ---",
+          "error",
+        );
         return;
       }
-      scheduleRestart(Math.max(1, Number.parseInt(CONFIG.autoRestartDelaySec, 10) || 10), 'crash recovery');
+      scheduleRestart(
+        Math.max(1, Number.parseInt(CONFIG.autoRestartDelaySec, 10) || 10),
+        "crash recovery",
+      );
     }
   });
 }
@@ -2015,9 +2284,9 @@ function ensureJarExists() {
   return jarPath;
 }
 
-function startServer(reason = 'manual') {
+function startServer(reason = "manual") {
   if (mcProcess) {
-    throw new Error('Server is already running');
+    throw new Error("Server is already running");
   }
   ensureDir(CONFIG.serverDir);
   ensureJarExists();
@@ -2028,32 +2297,32 @@ function startServer(reason = 'manual') {
   const installedJava = getInstalledJavaMajor();
   if (requiredJava && installedJava && installedJava < requiredJava) {
     throw new Error(
-      `${CONFIG.serverType || 'This server'} ${CONFIG.serverVersion || ''} needs Java ${requiredJava}+ but "${CONFIG.javaPath}" is Java ${installedJava}. `
-      + `In Termux run: pkg install ${suggestTermuxJdkPackage(requiredJava)}`,
+      `${CONFIG.serverType || "This server"} ${CONFIG.serverVersion || ""} needs Java ${requiredJava}+ but "${CONFIG.javaPath}" is Java ${installedJava}. ` +
+        `In Termux run: pkg install ${suggestTermuxJdkPackage(requiredJava)}`,
     );
   }
 
-  if (reason !== 'crash recovery') {
+  if (reason !== "crash recovery") {
     rapidCrashCount = 0;
   }
-  const eulaPath = path.join(CONFIG.serverDir, 'eula.txt');
+  const eulaPath = path.join(CONFIG.serverDir, "eula.txt");
   if (!fs.existsSync(eulaPath)) {
-    fs.writeFileSync(eulaPath, 'eula=true\n');
+    fs.writeFileSync(eulaPath, "eula=true\n");
   }
 
   const launchArgs = [
     `-Xmx${CONFIG.memory}`,
     `-Xms${CONFIG.memory}`,
-    '-jar',
+    "-jar",
     CONFIG.serverJar,
   ];
-  if (CONFIG.serverType !== 'nukkit') {
-    launchArgs.push('nogui');
+  if (CONFIG.serverType !== "nukkit") {
+    launchArgs.push("nogui");
   }
 
   const child = spawn(CONFIG.javaPath, launchArgs, {
     cwd: CONFIG.serverDir,
-    stdio: ['pipe', 'pipe', 'pipe'],
+    stdio: ["pipe", "pipe", "pipe"],
   });
 
   pendingRestart = null;
@@ -2063,26 +2332,29 @@ function startServer(reason = 'manual') {
   expectedExit = false;
   restartRequested = false;
   attachMcProcess(child);
-  addLog(`--- Starting ${CONFIG.serverJar} (${CONFIG.memory} RAM, ${reason}) ---`, 'system');
-  broadcast({ type: 'status', ...buildStatusPayload() });
+  addLog(
+    `--- Starting ${CONFIG.serverJar} (${CONFIG.memory} RAM, ${reason}) ---`,
+    "system",
+  );
+  broadcast({ type: "status", ...buildStatusPayload() });
 }
 
 function stopServer() {
   if (!mcProcess) {
-    throw new Error('Server is not running');
+    throw new Error("Server is not running");
   }
   expectedExit = true;
-  mcProcess.stdin.write('stop\n');
-  addLog('--- Stop command sent ---', 'system');
+  mcProcess.stdin.write("stop\n");
+  addLog("--- Stop command sent ---", "system");
 }
 
 function forceKillServer() {
   if (!mcProcess) {
-    throw new Error('Server is not running');
+    throw new Error("Server is not running");
   }
   expectedExit = true;
-  mcProcess.kill('SIGKILL');
-  addLog('--- Force killed ---', 'error');
+  mcProcess.kill("SIGKILL");
+  addLog("--- Force killed ---", "error");
 }
 
 function scheduleRestart(delaySec, reason) {
@@ -2093,15 +2365,15 @@ function scheduleRestart(delaySec, reason) {
     eta: new Date(Date.now() + safeDelay * 1000).toISOString(),
     delaySec: safeDelay,
   };
-  broadcast({ type: 'status', ...buildStatusPayload() });
+  broadcast({ type: "status", ...buildStatusPayload() });
   restartTimer = setTimeout(() => {
     pendingRestart = null;
     try {
       startServer(reason);
     } catch (error) {
-      addLog(`Auto-restart failed: ${error.message}`, 'error');
+      addLog(`Auto-restart failed: ${error.message}`, "error");
       appendCrashLog(`Auto-restart failed: ${error.message}`, null, null);
-      broadcast({ type: 'status', ...buildStatusPayload() });
+      broadcast({ type: "status", ...buildStatusPayload() });
     }
   }, safeDelay * 1000);
 }
@@ -2109,28 +2381,32 @@ function scheduleRestart(delaySec, reason) {
 function runLoggedProcess(command, args, cwd, failureLabel) {
   return new Promise((resolve, reject) => {
     const proc = spawn(command, args, { cwd });
-    proc.stdout.on('data', (chunk) => {
-      String(chunk).split('\n').forEach((line) => {
-        if (line.trim()) {
-          addLog(line.trim(), 'system');
-        }
-      });
+    proc.stdout.on("data", (chunk) => {
+      String(chunk)
+        .split("\n")
+        .forEach((line) => {
+          if (line.trim()) {
+            addLog(line.trim(), "system");
+          }
+        });
     });
-    proc.stderr.on('data', (chunk) => {
-      String(chunk).split('\n').forEach((line) => {
-        if (line.trim()) {
-          addLog(line.trim(), 'warn');
-        }
-      });
+    proc.stderr.on("data", (chunk) => {
+      String(chunk)
+        .split("\n")
+        .forEach((line) => {
+          if (line.trim()) {
+            addLog(line.trim(), "warn");
+          }
+        });
     });
-    proc.on('exit', (code) => {
+    proc.on("exit", (code) => {
       if (code === 0) {
         resolve();
       } else {
         reject(new Error(`${failureLabel} exited with code ${code}`));
       }
     });
-    proc.on('error', reject);
+    proc.on("error", reject);
   });
 }
 
@@ -2138,61 +2414,73 @@ function downloadFileWithProgress(url, outPath) {
   return new Promise((resolve, reject) => {
     const doGet = (currentUrl, depth = 0) => {
       if (depth > 5) {
-        reject(new Error('Too many redirects'));
+        reject(new Error("Too many redirects"));
         return;
       }
-      const mod = currentUrl.startsWith('https:') ? https : http;
-      const request = mod.get(currentUrl, { headers: { 'User-Agent': PANEL_USER_AGENT } }, (response) => {
-        if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
-          response.resume();
-          const nextUrl = new URL(response.headers.location, currentUrl).toString();
-          doGet(nextUrl, depth + 1);
-          return;
-        }
-        if (response.statusCode !== 200) {
-          response.resume();
-          reject(new Error(`HTTP ${response.statusCode}`));
-          return;
-        }
-        ensureDir(path.dirname(outPath));
-        downloadState.total = Number.parseInt(response.headers['content-length'] || '0', 10) || 0;
-        let received = 0;
-        const out = fs.createWriteStream(outPath);
-        const fail = (error) => {
-          try {
-            out.destroy();
-          } catch {}
-          try {
-            response.destroy();
-          } catch {}
-          try {
-            fs.rmSync(outPath, { force: true });
-          } catch {}
-          reject(error);
-        };
-        // Throttle progress broadcasts: one WS message per TCP chunk floods
-        // a phone browser badly enough to freeze the whole panel.
-        let lastProgressBroadcast = 0;
-        response.on('data', (chunk) => {
-          received += chunk.length;
-          downloadState.progress = received;
-          const nowTs = Date.now();
-          if (nowTs - lastProgressBroadcast >= 250) {
-            lastProgressBroadcast = nowTs;
-            broadcast({ type: 'download', ...downloadState });
+      const mod = currentUrl.startsWith("https:") ? https : http;
+      const request = mod.get(
+        currentUrl,
+        { headers: { "User-Agent": PANEL_USER_AGENT } },
+        (response) => {
+          if (
+            response.statusCode >= 300 &&
+            response.statusCode < 400 &&
+            response.headers.location
+          ) {
+            response.resume();
+            const nextUrl = new URL(
+              response.headers.location,
+              currentUrl,
+            ).toString();
+            doGet(nextUrl, depth + 1);
+            return;
           }
-        });
-        response.pipe(out);
-        out.on('finish', () => {
-          out.close(() => resolve());
-        });
-        out.on('error', fail);
-        response.on('error', fail);
-      });
+          if (response.statusCode !== 200) {
+            response.resume();
+            reject(new Error(`HTTP ${response.statusCode}`));
+            return;
+          }
+          ensureDir(path.dirname(outPath));
+          downloadState.total =
+            Number.parseInt(response.headers["content-length"] || "0", 10) || 0;
+          let received = 0;
+          const out = fs.createWriteStream(outPath);
+          const fail = (error) => {
+            try {
+              out.destroy();
+            } catch {}
+            try {
+              response.destroy();
+            } catch {}
+            try {
+              fs.rmSync(outPath, { force: true });
+            } catch {}
+            reject(error);
+          };
+          // Throttle progress broadcasts: one WS message per TCP chunk floods
+          // a phone browser badly enough to freeze the whole panel.
+          let lastProgressBroadcast = 0;
+          response.on("data", (chunk) => {
+            received += chunk.length;
+            downloadState.progress = received;
+            const nowTs = Date.now();
+            if (nowTs - lastProgressBroadcast >= 250) {
+              lastProgressBroadcast = nowTs;
+              broadcast({ type: "download", ...downloadState });
+            }
+          });
+          response.pipe(out);
+          out.on("finish", () => {
+            out.close(() => resolve());
+          });
+          out.on("error", fail);
+          response.on("error", fail);
+        },
+      );
       request.setTimeout(45000, () => {
-        request.destroy(new Error('Download timed out'));
+        request.destroy(new Error("Download timed out"));
       });
-      request.on('error', (error) => {
+      request.on("error", (error) => {
         try {
           fs.rmSync(outPath, { force: true });
         } catch {}
@@ -2205,7 +2493,7 @@ function downloadFileWithProgress(url, outPath) {
 
 async function verifyDownloadedFile(filePath, expected) {
   if (!expected || !expected.algorithm || !expected.value) {
-    const record = updateIntegrityRecord(filePath, { source: 'download' });
+    const record = updateIntegrityRecord(filePath, { source: "download" });
     return { verified: false, ...record };
   }
   const actual = shaForFile(filePath, expected.algorithm);
@@ -2213,7 +2501,7 @@ async function verifyDownloadedFile(filePath, expected) {
     throw new Error(`Checksum mismatch for ${path.basename(filePath)}`);
   }
   const record = updateIntegrityRecord(filePath, {
-    source: 'download',
+    source: "download",
     verifiedBy: expected.algorithm,
   });
   return {
@@ -2228,24 +2516,33 @@ async function verifyDownloadedFile(filePath, expected) {
 async function fetchPaperDownload(version) {
   // PaperMC retired api.papermc.io/v2 (it now returns 410); Fill v3 resolves
   // the latest build and its signed download URL in a single call.
-  const detail = await httpsGet(`https://fill.papermc.io/v3/projects/paper/versions/${encodeURIComponent(version)}/builds/latest`);
-  const download = detail?.downloads?.['server:default'];
+  const detail = await httpsGet(
+    `https://fill.papermc.io/v3/projects/paper/versions/${encodeURIComponent(version)}/builds/latest`,
+  );
+  const download = detail?.downloads?.["server:default"];
   if (!download?.url) {
-    throw new Error('Paper API returned no downloadable server artifact for that version');
+    throw new Error(
+      "Paper API returned no downloadable server artifact for that version",
+    );
   }
   return {
     url: download.url,
     checksum: download.checksums?.sha256
-      ? { algorithm: 'sha256', value: String(download.checksums.sha256).toLowerCase() }
+      ? {
+          algorithm: "sha256",
+          value: String(download.checksums.sha256).toLowerCase(),
+        }
       : null,
   };
 }
 
 async function fetchPurpurDownload(version) {
-  const builds = await httpsGet(`https://api.purpurmc.org/v2/purpur/${version}`);
+  const builds = await httpsGet(
+    `https://api.purpurmc.org/v2/purpur/${version}`,
+  );
   const build = Math.max(...(builds.builds || []));
   if (!Number.isFinite(build)) {
-    throw new Error('No Purpur build found for that version');
+    throw new Error("No Purpur build found for that version");
   }
   return {
     url: `https://api.purpurmc.org/v2/purpur/${version}/${build}/download`,
@@ -2254,257 +2551,350 @@ async function fetchPurpurDownload(version) {
 }
 
 async function fetchGitHubReleases(repo) {
-  const releases = await httpsGet(`https://api.github.com/repos/${repo}/releases?per_page=25`);
+  const releases = await httpsGet(
+    `https://api.github.com/repos/${repo}/releases?per_page=25`,
+  );
   if (!Array.isArray(releases)) {
-    throw new Error('Unexpected GitHub releases response');
+    throw new Error("Unexpected GitHub releases response");
   }
   return releases.filter((release) => !release.draft && !release.prerelease);
 }
 
 async function fetchNukkitDownload(version) {
-  const releases = await fetchGitHubReleases('CloudburstMC/Nukkit');
-  const release = releases.find((entry) => String(entry.tag_name || '').replace(/^v/i, '') === String(version).replace(/^v/i, ''));
+  const releases = await fetchGitHubReleases("CloudburstMC/Nukkit");
+  const release = releases.find(
+    (entry) =>
+      String(entry.tag_name || "").replace(/^v/i, "") ===
+      String(version).replace(/^v/i, ""),
+  );
   if (!release) {
-    throw new Error('Nukkit version not found');
+    throw new Error("Nukkit version not found");
   }
-  const asset = (release.assets || []).find((item) => /\.jar$/i.test(String(item.name || '')));
+  const asset = (release.assets || []).find((item) =>
+    /\.jar$/i.test(String(item.name || "")),
+  );
   if (!asset?.browser_download_url) {
-    throw new Error('No downloadable Nukkit jar found for that release');
+    throw new Error("No downloadable Nukkit jar found for that release");
   }
   return {
     url: asset.browser_download_url,
     checksum: null,
-    version: String(release.tag_name || version).replace(/^v/i, ''),
+    version: String(release.tag_name || version).replace(/^v/i, ""),
   };
 }
 
 function supportsPluginCrossplay(type) {
-  return ['paper', 'purpur'].includes(String(type || '').toLowerCase());
+  return ["paper", "purpur"].includes(String(type || "").toLowerCase());
 }
 
 async function installCrossplayPlugins() {
   if (!supportsPluginCrossplay(CONFIG.serverType)) {
-    throw new Error('Crossplay install currently requires a Paper or Purpur server');
+    throw new Error(
+      "Crossplay install currently requires a Paper or Purpur server",
+    );
   }
-  ensureDir(path.join(CONFIG.serverDir, 'plugins'));
+  ensureDir(path.join(CONFIG.serverDir, "plugins"));
   const targets = [
     {
-      name: 'Geyser',
-      url: 'https://download.geysermc.org/v2/projects/geyser/versions/latest/builds/latest/downloads/spigot',
-      fileName: 'Geyser-Spigot.jar',
+      name: "Geyser",
+      url: "https://download.geysermc.org/v2/projects/geyser/versions/latest/builds/latest/downloads/spigot",
+      fileName: "Geyser-Spigot.jar",
     },
     {
-      name: 'Floodgate',
-      url: 'https://download.geysermc.org/v2/projects/floodgate/versions/latest/builds/latest/downloads/spigot',
-      fileName: 'floodgate-spigot.jar',
+      name: "Floodgate",
+      url: "https://download.geysermc.org/v2/projects/floodgate/versions/latest/builds/latest/downloads/spigot",
+      fileName: "floodgate-spigot.jar",
     },
   ];
 
-  downloadState = { name: 'Crossplay plugins', progress: 0, total: targets.length, done: false, error: null };
-  broadcast({ type: 'download', ...downloadState });
+  downloadState = {
+    name: "Crossplay plugins",
+    progress: 0,
+    total: targets.length,
+    done: false,
+    error: null,
+  };
+  broadcast({ type: "download", ...downloadState });
 
   for (let i = 0; i < targets.length; i += 1) {
     const target = targets[i];
-    const outPath = path.join(CONFIG.serverDir, 'plugins', target.fileName);
-    addLog(`--- Downloading ${target.name} ---`, 'system');
+    const outPath = path.join(CONFIG.serverDir, "plugins", target.fileName);
+    addLog(`--- Downloading ${target.name} ---`, "system");
     downloadState.name = `${target.name} plugin`;
     downloadState.progress = i;
-    broadcast({ type: 'download', ...downloadState });
+    broadcast({ type: "download", ...downloadState });
     await downloadFileWithProgress(target.url, outPath);
-    updateIntegrityRecord(outPath, { source: 'crossplay install', package: target.name.toLowerCase() });
+    updateIntegrityRecord(outPath, {
+      source: "crossplay install",
+      package: target.name.toLowerCase(),
+    });
   }
 
   downloadState.progress = targets.length;
   downloadState.done = true;
-  downloadState.name = 'Crossplay plugins ready';
-  broadcast({ type: 'download', ...downloadState });
-  addLog('--- Crossplay plugins installed: Geyser + Floodgate ---', 'system');
+  downloadState.name = "Crossplay plugins ready";
+  broadcast({ type: "download", ...downloadState });
+  addLog("--- Crossplay plugins installed: Geyser + Floodgate ---", "system");
 }
 
 async function performServerDownload(type, version) {
   ensureDir(CONFIG.serverDir);
-  const outPath = path.join(CONFIG.serverDir, 'server.jar');
-  let downloadUrl = '';
+  const outPath = path.join(CONFIG.serverDir, "server.jar");
+  let downloadUrl = "";
   let expectedChecksum = null;
   let requiredJavaMajor = 0;
 
-  if (type === 'paper') {
+  if (type === "paper") {
     const info = await fetchPaperDownload(version);
     downloadUrl = info.url;
     expectedChecksum = info.checksum;
-  } else if (type === 'purpur') {
+  } else if (type === "purpur") {
     const info = await fetchPurpurDownload(version);
     downloadUrl = info.url;
     expectedChecksum = info.checksum;
-  } else if (type === 'vanilla') {
+  } else if (type === "vanilla") {
     const manifest = await getMojangManifest();
     const selected = manifest.versions.find((entry) => entry.id === version);
     if (!selected) {
-      throw new Error('Version not found');
+      throw new Error("Version not found");
     }
     const details = await httpsGet(selected.url);
     downloadUrl = details.downloads.server.url;
     expectedChecksum = details.downloads.server.sha1
-      ? { algorithm: 'sha1', value: String(details.downloads.server.sha1).toLowerCase() }
+      ? {
+          algorithm: "sha1",
+          value: String(details.downloads.server.sha1).toLowerCase(),
+        }
       : null;
     requiredJavaMajor = Number(details.javaVersion?.majorVersion) || 0;
-  } else if (type === 'nukkit') {
+  } else if (type === "nukkit") {
     const info = await fetchNukkitDownload(version);
     downloadUrl = info.url;
     expectedChecksum = info.checksum;
     version = info.version;
   } else {
-    throw new Error('Unsupported server type');
+    throw new Error("Unsupported server type");
   }
 
-  if (type === 'paper' || type === 'purpur') {
+  if (type === "paper" || type === "purpur") {
     requiredJavaMajor = await lookupRequiredJavaMajor(version);
   }
 
-  downloadState = { name: `${type}-${version}.jar`, progress: 0, total: 0, done: false, error: null };
-  broadcast({ type: 'download', ...downloadState });
+  downloadState = {
+    name: `${type}-${version}.jar`,
+    progress: 0,
+    total: 0,
+    done: false,
+    error: null,
+  };
+  broadcast({ type: "download", ...downloadState });
   await downloadFileWithProgress(downloadUrl, outPath);
   const integrity = await verifyDownloadedFile(outPath, expectedChecksum);
-  CONFIG.serverJar = 'server.jar';
+  CONFIG.serverJar = "server.jar";
   CONFIG.serverType = type;
   CONFIG.serverVersion = version;
   CONFIG.requiredJavaMajor = requiredJavaMajor;
-  CONFIG.lastDownloadedChecksum = (integrity && integrity.sha256) || '';
-  CONFIG.lastDownloadedChecksumType = integrity?.sha256 ? 'sha256' : '';
+  CONFIG.lastDownloadedChecksum = (integrity && integrity.sha256) || "";
+  CONFIG.lastDownloadedChecksumType = integrity?.sha256 ? "sha256" : "";
   saveConfig();
-  fs.writeFileSync(path.join(CONFIG.serverDir, 'eula.txt'), 'eula=true\n');
+  fs.writeFileSync(path.join(CONFIG.serverDir, "eula.txt"), "eula=true\n");
   downloadState.done = true;
   downloadState.checksum = (integrity && integrity.sha256) || null;
-  broadcast({ type: 'download', ...downloadState });
-  broadcast({ type: 'config', config: getPublicConfig() });
-  broadcast({ type: 'jarReady' });
+  broadcast({ type: "download", ...downloadState });
+  broadcast({ type: "config", config: getPublicConfig() });
+  broadcast({ type: "jarReady" });
 }
 
 async function performInstallerDownload(type, version) {
   ensureDir(CONFIG.serverDir);
 
-  if (type === 'fabric') {
-    const loaders = await httpsGet('https://meta.fabricmc.net/v2/versions/loader');
-    const installers = await httpsGet('https://meta.fabricmc.net/v2/versions/installer');
+  if (type === "fabric") {
+    const loaders = await httpsGet(
+      "https://meta.fabricmc.net/v2/versions/loader",
+    );
+    const installers = await httpsGet(
+      "https://meta.fabricmc.net/v2/versions/installer",
+    );
     const loaderVer = loaders[0].version;
     const installerVer = installers[0].version;
     const installerUrl = `https://maven.fabricmc.net/net/fabricmc/fabric-installer/${installerVer}/fabric-installer-${installerVer}.jar`;
-    const installerPath = path.join(CONFIG.serverDir, `fabric-installer-${installerVer}.jar`);
+    const installerPath = path.join(
+      CONFIG.serverDir,
+      `fabric-installer-${installerVer}.jar`,
+    );
 
-    addLog('--- Downloading Fabric installer ---', 'system');
-    downloadState = { name: `fabric-${version} installer`, progress: 0, total: 0, done: false, error: null };
-    broadcast({ type: 'download', ...downloadState });
+    addLog("--- Downloading Fabric installer ---", "system");
+    downloadState = {
+      name: `fabric-${version} installer`,
+      progress: 0,
+      total: 0,
+      done: false,
+      error: null,
+    };
+    broadcast({ type: "download", ...downloadState });
     await downloadFileWithProgress(installerUrl, installerPath);
     await verifyDownloadedFile(installerPath, null);
 
-    addLog('--- Running Fabric installer ---', 'system');
+    addLog("--- Running Fabric installer ---", "system");
     downloadState.name = `fabric-${version} (installing)`;
-    broadcast({ type: 'download', ...downloadState });
+    broadcast({ type: "download", ...downloadState });
     await runLoggedProcess(
       CONFIG.javaPath,
-      ['-jar', installerPath, 'server', '-mcversion', version, '-loader', loaderVer, '-downloadMinecraft'],
+      [
+        "-jar",
+        installerPath,
+        "server",
+        "-mcversion",
+        version,
+        "-loader",
+        loaderVer,
+        "-downloadMinecraft",
+      ],
       CONFIG.serverDir,
-      'Fabric installer',
+      "Fabric installer",
     );
     try {
       fs.unlinkSync(installerPath);
     } catch {
       // Ignore cleanup errors.
     }
-    const launchJar = path.join(CONFIG.serverDir, 'fabric-server-launch.jar');
+    const launchJar = path.join(CONFIG.serverDir, "fabric-server-launch.jar");
     if (!fs.existsSync(launchJar)) {
-      throw new Error('Fabric installer finished but fabric-server-launch.jar is missing');
+      throw new Error(
+        "Fabric installer finished but fabric-server-launch.jar is missing",
+      );
     }
-    const integrity = updateIntegrityRecord(launchJar, { source: 'fabric installer' });
-    CONFIG.serverJar = 'fabric-server-launch.jar';
-    CONFIG.serverType = 'fabric';
+    const integrity = updateIntegrityRecord(launchJar, {
+      source: "fabric installer",
+    });
+    CONFIG.serverJar = "fabric-server-launch.jar";
+    CONFIG.serverType = "fabric";
     CONFIG.serverVersion = version;
     CONFIG.requiredJavaMajor = await lookupRequiredJavaMajor(version);
-    CONFIG.lastDownloadedChecksum = integrity ? integrity.sha256 : '';
-    CONFIG.lastDownloadedChecksumType = 'sha256';
+    CONFIG.lastDownloadedChecksum = integrity ? integrity.sha256 : "";
+    CONFIG.lastDownloadedChecksumType = "sha256";
     saveConfig();
-    fs.writeFileSync(path.join(CONFIG.serverDir, 'eula.txt'), 'eula=true\n');
+    fs.writeFileSync(path.join(CONFIG.serverDir, "eula.txt"), "eula=true\n");
     downloadState.done = true;
     downloadState.checksum = integrity ? integrity.sha256 : null;
-    broadcast({ type: 'download', ...downloadState });
-    broadcast({ type: 'config', config: getPublicConfig() });
-    broadcast({ type: 'jarReady' });
+    broadcast({ type: "download", ...downloadState });
+    broadcast({ type: "config", config: getPublicConfig() });
+    broadcast({ type: "jarReady" });
     return;
   }
 
-  if (type === 'quilt') {
-    const installers = await httpsGet('https://meta.quiltmc.org/v3/versions/installer');
-    const loaders = await httpsGet('https://meta.quiltmc.org/v3/versions/loader');
+  if (type === "quilt") {
+    const installers = await httpsGet(
+      "https://meta.quiltmc.org/v3/versions/installer",
+    );
+    const loaders = await httpsGet(
+      "https://meta.quiltmc.org/v3/versions/loader",
+    );
     const installer = installers[0];
-    const loader = loaders.find((item) => !/(alpha|beta)/i.test(item.version)) || loaders[0];
-    const installerPath = path.join(CONFIG.serverDir, `quilt-installer-${installer.version}.jar`);
+    const loader =
+      loaders.find((item) => !/(alpha|beta)/i.test(item.version)) || loaders[0];
+    const installerPath = path.join(
+      CONFIG.serverDir,
+      `quilt-installer-${installer.version}.jar`,
+    );
 
-    addLog('--- Downloading Quilt installer ---', 'system');
-    downloadState = { name: `quilt-${version} installer`, progress: 0, total: 0, done: false, error: null };
-    broadcast({ type: 'download', ...downloadState });
+    addLog("--- Downloading Quilt installer ---", "system");
+    downloadState = {
+      name: `quilt-${version} installer`,
+      progress: 0,
+      total: 0,
+      done: false,
+      error: null,
+    };
+    broadcast({ type: "download", ...downloadState });
     await downloadFileWithProgress(installer.url, installerPath);
     await verifyDownloadedFile(installerPath, null);
 
-    addLog('--- Running Quilt installer ---', 'system');
+    addLog("--- Running Quilt installer ---", "system");
     downloadState.name = `quilt-${version} (installing)`;
-    broadcast({ type: 'download', ...downloadState });
+    broadcast({ type: "download", ...downloadState });
     await runLoggedProcess(
       CONFIG.javaPath,
-      ['-jar', installerPath, 'install', 'server', version, loader.version, '--install-dir=.', '--download-server'],
+      [
+        "-jar",
+        installerPath,
+        "install",
+        "server",
+        version,
+        loader.version,
+        "--install-dir=.",
+        "--download-server",
+      ],
       CONFIG.serverDir,
-      'Quilt installer',
+      "Quilt installer",
     );
     try {
       fs.unlinkSync(installerPath);
     } catch {
       // Ignore cleanup errors.
     }
-    const launchJar = path.join(CONFIG.serverDir, 'quilt-server-launch.jar');
+    const launchJar = path.join(CONFIG.serverDir, "quilt-server-launch.jar");
     if (!fs.existsSync(launchJar)) {
-      throw new Error('Quilt installer finished but quilt-server-launch.jar is missing');
+      throw new Error(
+        "Quilt installer finished but quilt-server-launch.jar is missing",
+      );
     }
-    const integrity = updateIntegrityRecord(launchJar, { source: 'quilt installer' });
-    CONFIG.serverJar = 'quilt-server-launch.jar';
-    CONFIG.serverType = 'quilt';
+    const integrity = updateIntegrityRecord(launchJar, {
+      source: "quilt installer",
+    });
+    CONFIG.serverJar = "quilt-server-launch.jar";
+    CONFIG.serverType = "quilt";
     CONFIG.serverVersion = version;
     CONFIG.requiredJavaMajor = await lookupRequiredJavaMajor(version);
-    CONFIG.lastDownloadedChecksum = integrity ? integrity.sha256 : '';
-    CONFIG.lastDownloadedChecksumType = 'sha256';
+    CONFIG.lastDownloadedChecksum = integrity ? integrity.sha256 : "";
+    CONFIG.lastDownloadedChecksumType = "sha256";
     saveConfig();
-    fs.writeFileSync(path.join(CONFIG.serverDir, 'eula.txt'), 'eula=true\n');
+    fs.writeFileSync(path.join(CONFIG.serverDir, "eula.txt"), "eula=true\n");
     downloadState.done = true;
     downloadState.checksum = integrity ? integrity.sha256 : null;
-    broadcast({ type: 'download', ...downloadState });
-    broadcast({ type: 'config', config: getPublicConfig() });
-    broadcast({ type: 'jarReady' });
+    broadcast({ type: "download", ...downloadState });
+    broadcast({ type: "config", config: getPublicConfig() });
+    broadcast({ type: "jarReady" });
     return;
   }
 
-  if (type === 'forge') {
+  if (type === "forge") {
     const mcMatch = String(version).match(/^([0-9.]+)/);
     const forgeMatch = String(version).match(/- ([0-9.]+)/);
     if (!mcMatch || !forgeMatch) {
-      throw new Error('Could not parse Forge version');
+      throw new Error("Could not parse Forge version");
     }
     const mcVersion = mcMatch[1];
     const forgeVersion = forgeMatch[1];
     const installerUrl = `https://maven.minecraftforge.net/net/minecraftforge/forge/${mcVersion}-${forgeVersion}/forge-${mcVersion}-${forgeVersion}-installer.jar`;
-    const installerPath = path.join(CONFIG.serverDir, `forge-${mcVersion}-${forgeVersion}-installer.jar`);
+    const installerPath = path.join(
+      CONFIG.serverDir,
+      `forge-${mcVersion}-${forgeVersion}-installer.jar`,
+    );
 
-    addLog(`--- Downloading Forge ${mcVersion}-${forgeVersion} installer ---`, 'system');
-    downloadState = { name: `forge-${mcVersion}-${forgeVersion} installer`, progress: 0, total: 0, done: false, error: null };
-    broadcast({ type: 'download', ...downloadState });
+    addLog(
+      `--- Downloading Forge ${mcVersion}-${forgeVersion} installer ---`,
+      "system",
+    );
+    downloadState = {
+      name: `forge-${mcVersion}-${forgeVersion} installer`,
+      progress: 0,
+      total: 0,
+      done: false,
+      error: null,
+    };
+    broadcast({ type: "download", ...downloadState });
     await downloadFileWithProgress(installerUrl, installerPath);
     await verifyDownloadedFile(installerPath, null);
 
-    addLog('--- Running Forge installer ---', 'system');
+    addLog("--- Running Forge installer ---", "system");
     downloadState.name = `forge-${mcVersion}-${forgeVersion} (installing)`;
-    broadcast({ type: 'download', ...downloadState });
+    broadcast({ type: "download", ...downloadState });
     await runLoggedProcess(
       CONFIG.javaPath,
-      ['-jar', installerPath, '--installServer'],
+      ["-jar", installerPath, "--installServer"],
       CONFIG.serverDir,
-      'Forge installer',
+      "Forge installer",
     );
     try {
       fs.unlinkSync(installerPath);
@@ -2515,93 +2905,116 @@ async function performInstallerDownload(type, version) {
     const plainJar = `forge-${mcVersion}-${forgeVersion}.jar`;
     const chosenJar = fs.existsSync(path.join(CONFIG.serverDir, shimJar))
       ? shimJar
-      : (fs.existsSync(path.join(CONFIG.serverDir, plainJar)) ? plainJar : null);
+      : fs.existsSync(path.join(CONFIG.serverDir, plainJar))
+        ? plainJar
+        : null;
     if (!chosenJar) {
-      throw new Error('Forge installed but no starter jar was detected');
+      throw new Error("Forge installed but no starter jar was detected");
     }
-    const integrity = updateIntegrityRecord(path.join(CONFIG.serverDir, chosenJar), { source: 'forge installer' });
+    const integrity = updateIntegrityRecord(
+      path.join(CONFIG.serverDir, chosenJar),
+      { source: "forge installer" },
+    );
     CONFIG.serverJar = chosenJar;
-    CONFIG.serverType = 'forge';
+    CONFIG.serverType = "forge";
     CONFIG.serverVersion = `${mcVersion}-${forgeVersion}`;
     CONFIG.requiredJavaMajor = await lookupRequiredJavaMajor(mcVersion);
-    CONFIG.lastDownloadedChecksum = integrity ? integrity.sha256 : '';
-    CONFIG.lastDownloadedChecksumType = 'sha256';
+    CONFIG.lastDownloadedChecksum = integrity ? integrity.sha256 : "";
+    CONFIG.lastDownloadedChecksumType = "sha256";
     saveConfig();
-    fs.writeFileSync(path.join(CONFIG.serverDir, 'eula.txt'), 'eula=true\n');
+    fs.writeFileSync(path.join(CONFIG.serverDir, "eula.txt"), "eula=true\n");
     downloadState.done = true;
     downloadState.checksum = integrity ? integrity.sha256 : null;
-    broadcast({ type: 'download', ...downloadState });
-    broadcast({ type: 'config', config: getPublicConfig() });
-    broadcast({ type: 'jarReady' });
+    broadcast({ type: "download", ...downloadState });
+    broadcast({ type: "config", config: getPublicConfig() });
+    broadcast({ type: "jarReady" });
     return;
   }
 
-  if (type === 'neoforge') {
+  if (type === "neoforge") {
     const installerUrl = `https://maven.neoforged.net/releases/net/neoforged/neoforge/${version}/neoforge-${version}-installer.jar`;
-    const installerPath = path.join(CONFIG.serverDir, `neoforge-${version}-installer.jar`);
+    const installerPath = path.join(
+      CONFIG.serverDir,
+      `neoforge-${version}-installer.jar`,
+    );
 
-    addLog(`--- Downloading NeoForge ${version} installer ---`, 'system');
-    downloadState = { name: `neoforge-${version} installer`, progress: 0, total: 0, done: false, error: null };
-    broadcast({ type: 'download', ...downloadState });
+    addLog(`--- Downloading NeoForge ${version} installer ---`, "system");
+    downloadState = {
+      name: `neoforge-${version} installer`,
+      progress: 0,
+      total: 0,
+      done: false,
+      error: null,
+    };
+    broadcast({ type: "download", ...downloadState });
     await downloadFileWithProgress(installerUrl, installerPath);
     await verifyDownloadedFile(installerPath, null);
 
-    addLog('--- Running NeoForge installer ---', 'system');
+    addLog("--- Running NeoForge installer ---", "system");
     downloadState.name = `neoforge-${version} (installing)`;
-    broadcast({ type: 'download', ...downloadState });
+    broadcast({ type: "download", ...downloadState });
     await runLoggedProcess(
       CONFIG.javaPath,
-      ['-jar', installerPath, '--installServer', '.', '--serverJar'],
+      ["-jar", installerPath, "--installServer", ".", "--serverJar"],
       CONFIG.serverDir,
-      'NeoForge installer',
+      "NeoForge installer",
     );
     try {
       fs.unlinkSync(installerPath);
     } catch {
       // Ignore cleanup errors.
     }
-    const starterJar = ['server.jar', `neoforge-${version}-server.jar`]
-      .find((name) => fs.existsSync(path.join(CONFIG.serverDir, name)));
+    const starterJar = ["server.jar", `neoforge-${version}-server.jar`].find(
+      (name) => fs.existsSync(path.join(CONFIG.serverDir, name)),
+    );
     if (!starterJar) {
-      throw new Error('NeoForge installed but no starter jar was found');
+      throw new Error("NeoForge installed but no starter jar was found");
     }
-    const integrity = updateIntegrityRecord(path.join(CONFIG.serverDir, starterJar), { source: 'neoforge installer' });
+    const integrity = updateIntegrityRecord(
+      path.join(CONFIG.serverDir, starterJar),
+      { source: "neoforge installer" },
+    );
     CONFIG.serverJar = starterJar;
-    CONFIG.serverType = 'neoforge';
+    CONFIG.serverType = "neoforge";
     CONFIG.serverVersion = version;
     // NeoForge version ids do not map to vanilla ids; the crash-time
     // explainCrash() fallback covers Java mismatches here.
     CONFIG.requiredJavaMajor = 0;
-    CONFIG.lastDownloadedChecksum = integrity ? integrity.sha256 : '';
-    CONFIG.lastDownloadedChecksumType = 'sha256';
+    CONFIG.lastDownloadedChecksum = integrity ? integrity.sha256 : "";
+    CONFIG.lastDownloadedChecksumType = "sha256";
     saveConfig();
-    fs.writeFileSync(path.join(CONFIG.serverDir, 'eula.txt'), 'eula=true\n');
+    fs.writeFileSync(path.join(CONFIG.serverDir, "eula.txt"), "eula=true\n");
     downloadState.done = true;
     downloadState.checksum = integrity ? integrity.sha256 : null;
-    broadcast({ type: 'download', ...downloadState });
-    broadcast({ type: 'config', config: getPublicConfig() });
-    broadcast({ type: 'jarReady' });
+    broadcast({ type: "download", ...downloadState });
+    broadcast({ type: "config", config: getPublicConfig() });
+    broadcast({ type: "jarReady" });
     return;
   }
 
-  throw new Error('Unsupported installer type');
+  throw new Error("Unsupported installer type");
 }
 
 async function handleServerDownload(type, version) {
   if (downloadState && !downloadState.done && !downloadState.error) {
-    throw new Error('A download is already in progress');
+    throw new Error("A download is already in progress");
   }
 
   if (fs.existsSync(CONFIG.serverDir)) {
     try {
       const backup = createBackup(`pre-update ${type} ${version}`);
-      addLog(`--- Pre-update backup created (${backup.id}) ---`, 'system');
+      addLog(`--- Pre-update backup created (${backup.id}) ---`, "system");
     } catch (error) {
-      addLog(`Backup before update failed: ${error.message}`, 'warn');
+      addLog(`Backup before update failed: ${error.message}`, "warn");
     }
   }
 
-  if (type === 'paper' || type === 'purpur' || type === 'vanilla' || type === 'nukkit') {
+  if (
+    type === "paper" ||
+    type === "purpur" ||
+    type === "vanilla" ||
+    type === "nukkit"
+  ) {
     await performServerDownload(type, version);
     return;
   }
@@ -2609,9 +3022,9 @@ async function handleServerDownload(type, version) {
 }
 
 function sanitizeUploadName(name) {
-  const clean = path.basename(String(name || ''));
-  if (!clean.endsWith('.jar')) {
-    throw new Error('Only .jar files are allowed');
+  const clean = path.basename(String(name || ""));
+  if (!clean.endsWith(".jar")) {
+    throw new Error("Only .jar files are allowed");
   }
   return clean;
 }
@@ -2622,14 +3035,14 @@ function saveUploadedJar(dirName, filename, data) {
   const safeName = sanitizeUploadName(filename);
   const targetPath = path.join(targetDir, safeName);
   try {
-    fs.writeFileSync(targetPath, Buffer.from(data, 'base64'), { flag: 'wx' });
+    fs.writeFileSync(targetPath, Buffer.from(data, "base64"), { flag: "wx" });
   } catch (err) {
-    if (err.code === 'EEXIST') {
-      throw new Error('File already exists');
+    if (err.code === "EEXIST") {
+      throw new Error("File already exists");
     }
     throw err;
   }
-  const integrity = updateIntegrityRecord(targetPath, { source: 'upload' });
+  const integrity = updateIntegrityRecord(targetPath, { source: "upload" });
   return {
     ok: true,
     name: safeName,
@@ -2642,35 +3055,50 @@ function maybeRunScheduledTasks() {
   const nowMs = now.getTime();
 
   const backupMinutes = Number.parseInt(CONFIG.scheduleBackupMinutes, 10) || 0;
-  if (backupMinutes > 0 && nowMs - schedulerState.lastBackupAt >= backupMinutes * 60 * 1000) {
+  if (
+    backupMinutes > 0 &&
+    nowMs - schedulerState.lastBackupAt >= backupMinutes * 60 * 1000
+  ) {
     schedulerState.lastBackupAt = nowMs;
     try {
-      const backup = createBackup('scheduled backup');
-      addLog(`--- Scheduled backup created (${backup.id}) ---`, 'system');
-      broadcast({ type: 'status', ...buildStatusPayload() });
+      const backup = createBackup("scheduled backup");
+      addLog(`--- Scheduled backup created (${backup.id}) ---`, "system");
+      broadcast({ type: "status", ...buildStatusPayload() });
     } catch (error) {
-      addLog(`Scheduled backup failed: ${error.message}`, 'warn');
+      addLog(`Scheduled backup failed: ${error.message}`, "warn");
     }
   }
 
-  const broadcastMinutes = Number.parseInt(CONFIG.scheduleBroadcastMinutes, 10) || 0;
-  const broadcastMessage = String(CONFIG.scheduleBroadcastMessage || '').trim();
-  if (broadcastMinutes > 0 && broadcastMessage && mcProcess && nowMs - schedulerState.lastBroadcastAt >= broadcastMinutes * 60 * 1000) {
+  const broadcastMinutes =
+    Number.parseInt(CONFIG.scheduleBroadcastMinutes, 10) || 0;
+  const broadcastMessage = String(CONFIG.scheduleBroadcastMessage || "").trim();
+  if (
+    broadcastMinutes > 0 &&
+    broadcastMessage &&
+    mcProcess &&
+    nowMs - schedulerState.lastBroadcastAt >= broadcastMinutes * 60 * 1000
+  ) {
     schedulerState.lastBroadcastAt = nowMs;
     mcProcess.stdin.write(`say ${broadcastMessage}\n`);
-    addLog(`> say ${broadcastMessage}`, 'cmd');
+    addLog(`> say ${broadcastMessage}`, "cmd");
   }
 
-  if (CONFIG.scheduleRestartTime && validateScheduleTime(CONFIG.scheduleRestartTime)) {
+  if (
+    CONFIG.scheduleRestartTime &&
+    validateScheduleTime(CONFIG.scheduleRestartTime)
+  ) {
     const slot = `${now.toISOString().slice(0, 10)} ${CONFIG.scheduleRestartTime}`;
-    const localTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-    if (localTime === CONFIG.scheduleRestartTime && schedulerState.lastRestartSlot !== slot) {
+    const localTime = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+    if (
+      localTime === CONFIG.scheduleRestartTime &&
+      schedulerState.lastRestartSlot !== slot
+    ) {
       schedulerState.lastRestartSlot = slot;
       if (mcProcess) {
-        addLog('--- Scheduled restart triggered ---', 'system');
+        addLog("--- Scheduled restart triggered ---", "system");
         restartRequested = true;
         expectedExit = true;
-        mcProcess.stdin.write('stop\n');
+        mcProcess.stdin.write("stop\n");
       }
     }
   }
@@ -2678,33 +3106,35 @@ function maybeRunScheduledTasks() {
 
 function readPanelVersion() {
   try {
-    const versionFile = path.join(UI_DIR, '.version');
+    const versionFile = path.join(UI_DIR, ".version");
     if (fs.existsSync(versionFile)) {
-      const value = fs.readFileSync(versionFile, 'utf8').trim();
+      const value = fs.readFileSync(versionFile, "utf8").trim();
       if (value) return value;
     }
   } catch (_) {}
   try {
-    return require('./package.json').version;
+    return require("./package.json").version;
   } catch (_) {}
-  return 'unknown';
+  return "unknown";
 }
 
 app.use((req, res, next) => {
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
-  res.setHeader('Referrer-Policy', 'no-referrer');
-  res.setHeader('X-DNS-Prefetch-Control', 'off');
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "SAMEORIGIN");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("X-DNS-Prefetch-Control", "off");
   next();
 });
 
 // JAR uploads arrive as base64 JSON and need a large limit; every other
 // endpoint gets a small one so a single request cannot exhaust phone RAM.
-const smallJsonBody = express.json({ limit: '2mb' });
-const largeJsonBody = express.json({ limit: '700mb' });
-const LARGE_BODY_ROUTES = new Set(['/api/mods/upload', '/api/plugins/upload']);
+const smallJsonBody = express.json({ limit: "2mb" });
+const largeJsonBody = express.json({ limit: "700mb" });
+const LARGE_BODY_ROUTES = new Set(["/api/mods/upload", "/api/plugins/upload"]);
 app.use((req, res, next) => {
-  const parser = LARGE_BODY_ROUTES.has(req.path) ? largeJsonBody : smallJsonBody;
+  const parser = LARGE_BODY_ROUTES.has(req.path)
+    ? largeJsonBody
+    : smallJsonBody;
   parser(req, res, next);
 });
 
@@ -2713,33 +3143,47 @@ app.use((error, req, res, next) => {
     next();
     return;
   }
-  if (error.type === 'entity.too.large') {
-    res.status(413).json({ error: 'Upload too large for server limit' });
+  if (error.type === "entity.too.large") {
+    res.status(413).json({ error: "Upload too large for server limit" });
     return;
   }
-  res.status(400).json({ error: error.message || 'Bad request' });
+  res.status(400).json({ error: error.message || "Bad request" });
 });
 
-app.get('/api/auth/status', (req, res) => {
+app.get("/api/auth/status", (req, res) => {
   if (!ACCESS.authRequired) {
     res.json({
       authenticated: true,
       authRequired: false,
       needsSetup: false,
-      username: ACCESS.profile?.handle || 'local',
-      handle: ACCESS.profile?.handle || 'local',
+      username: ACCESS.profile?.handle || "local",
+      handle: ACCESS.profile?.handle || "local",
       bootstrap: false,
     });
     return;
   }
   if (needsSetup()) {
-    res.json({ authenticated: false, authRequired: true, needsSetup: true, handle: null, username: null, bootstrap: false });
+    res.json({
+      authenticated: false,
+      authRequired: true,
+      needsSetup: true,
+      handle: null,
+      username: null,
+      bootstrap: false,
+    });
     return;
   }
   const session = getSessionFromRequest(req);
   if (!session) {
     // Never leak the account handle to unauthenticated visitors.
-    res.json({ authenticated: false, authRequired: true, needsSetup: false, handle: null, username: null, bootstrap: false });
+    res.json({
+      authenticated: false,
+      authRequired: true,
+      needsSetup: false,
+      handle: null,
+      username: null,
+      bootstrap: false,
+    });
     return;
   }
   res.json({
@@ -2752,14 +3196,19 @@ app.get('/api/auth/status', (req, res) => {
   });
 });
 
-app.post('/api/auth/setup', (req, res) => {
+app.post("/api/auth/setup", (req, res) => {
   if (!AUTH_FEATURE_ENABLED) {
-    res.json({ ok: true, disabled: true, handle: ACCESS.profile?.handle || 'local', username: ACCESS.profile?.handle || 'local' });
+    res.json({
+      ok: true,
+      disabled: true,
+      handle: ACCESS.profile?.handle || "local",
+      username: ACCESS.profile?.handle || "local",
+    });
     return;
   }
   ACCESS = loadAccess();
   if (!needsSetup()) {
-    res.status(409).json({ error: 'Panel account already exists' });
+    res.status(409).json({ error: "Panel account already exists" });
     return;
   }
   try {
@@ -2767,36 +3216,51 @@ app.post('/api/auth/setup', (req, res) => {
     const secret = validatePassphrase(req.body?.secret || req.body?.password);
     const confirm = String(req.body?.confirm ?? secret);
     if (secret !== confirm) {
-      throw new Error('Passphrases do not match');
+      throw new Error("Passphrases do not match");
     }
     ACCESS = buildAccessRecord(handle, secret, false);
     saveAccess();
     revokeAllSessions();
     const token = createSession(ACCESS.profile.handle);
     setSessionCookie(res, token);
-    addLog(`Panel account created for "${ACCESS.profile.handle}"`, 'system');
-    res.json({ ok: true, handle: ACCESS.profile.handle, username: ACCESS.profile.handle });
+    addLog(`Panel account created for "${ACCESS.profile.handle}"`, "system");
+    res.json({
+      ok: true,
+      handle: ACCESS.profile.handle,
+      username: ACCESS.profile.handle,
+    });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
 });
 
-app.post('/api/auth/login', async (req, res) => {
+app.post("/api/auth/login", async (req, res) => {
   if (!AUTH_FEATURE_ENABLED) {
-    res.json({ ok: true, disabled: true, username: ACCESS.profile?.handle || 'local', handle: ACCESS.profile?.handle || 'local', bootstrap: false });
+    res.json({
+      ok: true,
+      disabled: true,
+      username: ACCESS.profile?.handle || "local",
+      handle: ACCESS.profile?.handle || "local",
+      bootstrap: false,
+    });
     return;
   }
   if (needsSetup()) {
-    res.status(409).json({ error: 'Panel setup required', needsSetup: true });
+    res.status(409).json({ error: "Panel setup required", needsSetup: true });
     return;
   }
   const lockedFor = loginLockedSeconds(req);
   if (lockedFor > 0) {
-    res.status(429).json({ error: `Too many failed attempts. Try again in ${lockedFor}s.`, retryAfterSec: lockedFor });
+    res
+      .status(429)
+      .json({
+        error: `Too many failed attempts. Try again in ${lockedFor}s.`,
+        retryAfterSec: lockedFor,
+      });
     return;
   }
-  const handle = String(req.body?.handle || req.body?.username || '').trim();
-  const secret = String(req.body?.secret || req.body?.password || '');
+  const handle = String(req.body?.handle || req.body?.username || "").trim();
+  const secret = String(req.body?.secret || req.body?.password || "");
   let valid = false;
   try {
     valid = await verifyAccess(handle, secret);
@@ -2805,16 +3269,21 @@ app.post('/api/auth/login', async (req, res) => {
   }
   if (!valid) {
     recordLoginFailure(req);
-    res.status(401).json({ error: 'Invalid handle or passphrase' });
+    res.status(401).json({ error: "Invalid handle or passphrase" });
     return;
   }
   clearLoginFailures(req);
   const token = createSession(ACCESS.profile.handle);
   setSessionCookie(res, token);
-  res.json({ ok: true, username: ACCESS.profile.handle, handle: ACCESS.profile.handle, bootstrap: !!ACCESS.flags?.bootstrap });
+  res.json({
+    ok: true,
+    username: ACCESS.profile.handle,
+    handle: ACCESS.profile.handle,
+    bootstrap: !!ACCESS.flags?.bootstrap,
+  });
 });
 
-app.post('/api/auth/logout', (req, res) => {
+app.post("/api/auth/logout", (req, res) => {
   if (!AUTH_FEATURE_ENABLED) {
     res.json({ ok: true, disabled: true });
     return;
@@ -2828,17 +3297,26 @@ app.post('/api/auth/logout', (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/auth/change', requireAuth, async (req, res) => {
+app.post("/api/auth/change", requireAuth, async (req, res) => {
   if (!AUTH_FEATURE_ENABLED) {
-    res.json({ ok: true, disabled: true, username: ACCESS.profile?.handle || 'local', handle: ACCESS.profile?.handle || 'local' });
+    res.json({
+      ok: true,
+      disabled: true,
+      username: ACCESS.profile?.handle || "local",
+      handle: ACCESS.profile?.handle || "local",
+    });
     return;
   }
   try {
-    const currentSecret = String(req.body?.currentSecret || req.body?.currentPassword || '');
+    const currentSecret = String(
+      req.body?.currentSecret || req.body?.currentPassword || "",
+    );
     const handle = validateHandle(req.body?.handle || req.body?.username);
-    const nextSecret = validatePassphrase(req.body?.nextSecret || req.body?.newPassword);
+    const nextSecret = validatePassphrase(
+      req.body?.nextSecret || req.body?.newPassword,
+    );
     if (!(await verifyAccess(ACCESS.profile.handle, currentSecret))) {
-      res.status(400).json({ error: 'Current passphrase is incorrect' });
+      res.status(400).json({ error: "Current passphrase is incorrect" });
       return;
     }
     setAccess(handle, nextSecret, false);
@@ -2846,38 +3324,45 @@ app.post('/api/auth/change', requireAuth, async (req, res) => {
     revokeAllSessions();
     const token = createSession(ACCESS.profile.handle);
     setSessionCookie(res, token);
-    addLog(`Panel credentials updated for "${ACCESS.profile.handle}"`, 'system');
-    res.json({ ok: true, username: ACCESS.profile.handle, handle: ACCESS.profile.handle });
+    addLog(
+      `Panel credentials updated for "${ACCESS.profile.handle}"`,
+      "system",
+    );
+    res.json({
+      ok: true,
+      username: ACCESS.profile.handle,
+      handle: ACCESS.profile.handle,
+    });
   } catch (error) {
     res.status(400).json({ error: error.message });
   }
 });
 
-app.get('/api/health', (req, res) => {
+app.get("/api/health", (req, res) => {
   res.json({
     ok: true,
-    panel: 'TermuCraft',
+    panel: "TermuCraft",
     version: readPanelVersion(),
     uptime: Math.floor(process.uptime()),
   });
 });
 
-app.use('/api', requireAuth);
+app.use("/api", requireAuth);
 
-app.get('/api/status', (req, res) => {
+app.get("/api/status", (req, res) => {
   res.json(buildStatusPayload());
 });
 
-app.post('/api/start', (req, res) => {
+app.post("/api/start", (req, res) => {
   try {
-    startServer('manual start');
+    startServer("manual start");
     res.json({ ok: true });
   } catch (error) {
     res.json({ error: error.message });
   }
 });
 
-app.post('/api/stop', (req, res) => {
+app.post("/api/stop", (req, res) => {
   try {
     stopServer();
     res.json({ ok: true });
@@ -2886,23 +3371,23 @@ app.post('/api/stop', (req, res) => {
   }
 });
 
-app.post('/api/restart', (req, res) => {
+app.post("/api/restart", (req, res) => {
   try {
     ensureJarExists();
     if (!mcProcess) {
-      throw new Error('Server is not running');
+      throw new Error("Server is not running");
     }
     restartRequested = true;
     expectedExit = true;
-    mcProcess.stdin.write('stop\n');
-    addLog('--- Restart command sent ---', 'system');
+    mcProcess.stdin.write("stop\n");
+    addLog("--- Restart command sent ---", "system");
     res.json({ ok: true });
   } catch (error) {
     res.json({ error: error.message });
   }
 });
 
-app.post('/api/kill', (req, res) => {
+app.post("/api/kill", (req, res) => {
   try {
     forceKillServer();
     res.json({ ok: true });
@@ -2911,35 +3396,35 @@ app.post('/api/kill', (req, res) => {
   }
 });
 
-app.post('/api/command', (req, res) => {
-  const command = String(req.body?.command || '').trim();
+app.post("/api/command", (req, res) => {
+  const command = String(req.body?.command || "").trim();
   if (!command) {
-    res.json({ error: 'Command is empty' });
+    res.json({ error: "Command is empty" });
     return;
   }
   if (command.length > 1000) {
-    res.json({ error: 'Command too long (max 1000 characters)' });
+    res.json({ error: "Command too long (max 1000 characters)" });
     return;
   }
   if (!mcProcess) {
-    res.json({ error: 'Server is not running' });
+    res.json({ error: "Server is not running" });
     return;
   }
   mcProcess.stdin.write(`${command}\n`);
-  addLog(`> ${command}`, 'cmd');
+  addLog(`> ${command}`, "cmd");
   res.json({ ok: true });
 });
 
-app.post('/api/player/:action', (req, res) => {
+app.post("/api/player/:action", (req, res) => {
   if (!mcProcess) {
-    res.json({ error: 'Server is not running' });
+    res.json({ error: "Server is not running" });
     return;
   }
-  const name = String(req.body?.name || '').trim();
-  const extra = String(req.body?.extra || '').trim();
+  const name = String(req.body?.name || "").trim();
+  const extra = String(req.body?.extra || "").trim();
   const map = {
-    kick: `kick ${name} ${extra || 'Kicked by admin'}`,
-    ban: `ban ${name} ${extra || 'Banned by admin'}`,
+    kick: `kick ${name} ${extra || "Kicked by admin"}`,
+    ban: `ban ${name} ${extra || "Banned by admin"}`,
     unban: `pardon ${name}`,
     op: `op ${name}`,
     deop: `deop ${name}`,
@@ -2954,26 +3439,26 @@ app.post('/api/player/:action', (req, res) => {
   };
   const command = map[req.params.action];
   if (!command) {
-    res.json({ error: 'Unknown player action' });
+    res.json({ error: "Unknown player action" });
     return;
   }
   mcProcess.stdin.write(`${command}\n`);
-  addLog(`> ${command}`, 'cmd');
+  addLog(`> ${command}`, "cmd");
   res.json({ ok: true });
 });
 
-app.post('/api/list', (req, res) => {
+app.post("/api/list", (req, res) => {
   if (mcProcess) {
-    mcProcess.stdin.write('list\n');
+    mcProcess.stdin.write("list\n");
   }
   res.json({ ok: true });
 });
 
-app.get('/api/config', (req, res) => {
+app.get("/api/config", (req, res) => {
   res.json(getPublicConfig());
 });
 
-app.post('/api/config', async (req, res) => {
+app.post("/api/config", async (req, res) => {
   let nextConfig;
   try {
     nextConfig = buildNextConfig(CONFIG, req.body || {});
@@ -2982,52 +3467,55 @@ app.post('/api/config', async (req, res) => {
     return;
   }
   if (JSON.stringify(nextConfig) !== JSON.stringify(CONFIG)) {
-    createPanelSnapshot('pre-config update', 'config-save');
+    createPanelSnapshot("pre-config update", "config-save");
   }
   CONFIG = nextConfig;
   saveConfig();
   if (hasDuckDnsConfig()) {
-    await runDuckDnsUpdate('config save');
+    await runDuckDnsUpdate("config save");
   } else {
     await maybeRunDuckDnsUpdate();
   }
   updateSystemStats();
-  broadcast({ type: 'config', config: getPublicConfig() });
-  broadcast({ type: 'status', ...buildStatusPayload() });
+  broadcast({ type: "config", config: getPublicConfig() });
+  broadcast({ type: "status", ...buildStatusPayload() });
   res.json({ ok: true, config: getPublicConfig() });
 });
 
-app.post('/api/duckdns/update', async (req, res) => {
+app.post("/api/duckdns/update", async (req, res) => {
   if (!hasDuckDnsConfig()) {
-    res.status(400).json({ error: 'DuckDNS is not configured yet' });
+    res.status(400).json({ error: "DuckDNS is not configured yet" });
     return;
   }
-  const state = await runDuckDnsUpdate('manual');
+  const state = await runDuckDnsUpdate("manual");
   res.json({ ok: !state.lastError, state });
 });
 
-app.get('/api/panel/snapshots', (req, res) => {
+app.get("/api/panel/snapshots", (req, res) => {
   res.json({ snapshots: listPanelSnapshots() });
 });
 
-app.get('/api/panel/export', (req, res) => {
-  const snapshot = createPanelSnapshot('manual export', 'export');
-  res.setHeader('Content-Type', 'application/json; charset=utf-8');
-  res.setHeader('Content-Disposition', `attachment; filename="termucraft-snapshot-${snapshot.id}.json"`);
+app.get("/api/panel/export", (req, res) => {
+  const snapshot = createPanelSnapshot("manual export", "export");
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="termucraft-snapshot-${snapshot.id}.json"`,
+  );
   res.send(JSON.stringify(snapshot, null, 2));
 });
 
-app.post('/api/panel/import', async (req, res) => {
+app.post("/api/panel/import", async (req, res) => {
   try {
-    createPanelSnapshot('pre-import safeguard', 'import-backup');
+    createPanelSnapshot("pre-import safeguard", "import-backup");
     const result = applyPanelSnapshot(req.body || {});
     if (hasDuckDnsConfig()) {
-      await runDuckDnsUpdate('snapshot import');
+      await runDuckDnsUpdate("snapshot import");
     } else {
       await maybeRunDuckDnsUpdate();
     }
-    broadcast({ type: 'config', config: getPublicConfig() });
-    broadcast({ type: 'status', ...buildStatusPayload() });
+    broadcast({ type: "config", config: getPublicConfig() });
+    broadcast({ type: "status", ...buildStatusPayload() });
     res.json({
       ok: true,
       ...result,
@@ -3038,18 +3526,18 @@ app.post('/api/panel/import', async (req, res) => {
   }
 });
 
-app.post('/api/panel/snapshots/:id/restore', async (req, res) => {
+app.post("/api/panel/snapshots/:id/restore", async (req, res) => {
   try {
     const snapshot = loadPanelSnapshotFile(req.params.id);
-    createPanelSnapshot(`pre-restore ${req.params.id}`, 'restore-backup');
+    createPanelSnapshot(`pre-restore ${req.params.id}`, "restore-backup");
     const result = applyPanelSnapshot(snapshot);
     if (hasDuckDnsConfig()) {
       await runDuckDnsUpdate(`snapshot restore ${req.params.id}`);
     } else {
       await maybeRunDuckDnsUpdate();
     }
-    broadcast({ type: 'config', config: getPublicConfig() });
-    broadcast({ type: 'status', ...buildStatusPayload() });
+    broadcast({ type: "config", config: getPublicConfig() });
+    broadcast({ type: "status", ...buildStatusPayload() });
     res.json({
       ok: true,
       restored: req.params.id,
@@ -3061,21 +3549,23 @@ app.post('/api/panel/snapshots/:id/restore', async (req, res) => {
   }
 });
 
-app.delete('/api/panel/snapshots/:id', (req, res) => {
+app.delete("/api/panel/snapshots/:id", (req, res) => {
   try {
     const snapshot = loadPanelSnapshotFile(req.params.id);
-    fs.rmSync(path.join(PANEL_SNAPSHOT_DIR, `${snapshot.id}.json`), { force: true });
+    fs.rmSync(path.join(PANEL_SNAPSHOT_DIR, `${snapshot.id}.json`), {
+      force: true,
+    });
     res.json({ ok: true, snapshots: listPanelSnapshots() });
   } catch (error) {
     res.status(404).json({ error: error.message });
   }
 });
 
-app.get('/api/presets', (req, res) => {
+app.get("/api/presets", (req, res) => {
   res.json({ presets: PRESETS, current: CONFIG.preset });
 });
 
-app.post('/api/presets/:name', (req, res) => {
+app.post("/api/presets/:name", (req, res) => {
   try {
     const result = applyPreset(req.params.name);
     res.json({ ok: true, ...result });
@@ -3084,7 +3574,7 @@ app.post('/api/presets/:name', (req, res) => {
   }
 });
 
-app.get('/api/properties', (req, res) => {
+app.get("/api/properties", (req, res) => {
   const props = readProperties();
   if (!props.motd && CONFIG.motd) {
     props.motd = CONFIG.motd;
@@ -3092,36 +3582,38 @@ app.get('/api/properties', (req, res) => {
   res.json(props);
 });
 
-app.post('/api/properties', (req, res) => {
+app.post("/api/properties", (req, res) => {
   try {
     const props = { ...req.body };
-    createPanelSnapshot('pre-properties update', 'properties-save');
-    if (Object.prototype.hasOwnProperty.call(props, 'motd')) {
-      CONFIG.motd = String(props.motd || '');
+    createPanelSnapshot("pre-properties update", "properties-save");
+    if (Object.prototype.hasOwnProperty.call(props, "motd")) {
+      CONFIG.motd = String(props.motd || "");
       saveConfig();
     }
     writeProperties(props);
-    broadcast({ type: 'status', ...buildStatusPayload() });
+    broadcast({ type: "status", ...buildStatusPayload() });
     res.json({ ok: true });
   } catch (error) {
     res.json({ error: error.message });
   }
 });
 
-app.get('/api/backups', (req, res) => {
+app.get("/api/backups", (req, res) => {
   res.json({ backups: listBackups() });
 });
 
-app.post('/api/backups/create', (req, res) => {
+app.post("/api/backups/create", (req, res) => {
   try {
-    const backup = createBackup(String(req.body?.label || '').trim() || 'manual backup');
+    const backup = createBackup(
+      String(req.body?.label || "").trim() || "manual backup",
+    );
     res.json({ ok: true, backup });
   } catch (error) {
     res.json({ error: error.message });
   }
 });
 
-app.post('/api/backups/:id/restore', (req, res) => {
+app.post("/api/backups/:id/restore", (req, res) => {
   try {
     const result = restoreBackup(req.params.id);
     res.json({ ok: true, ...result });
@@ -3130,7 +3622,7 @@ app.post('/api/backups/:id/restore', (req, res) => {
   }
 });
 
-app.delete('/api/backups/:id', (req, res) => {
+app.delete("/api/backups/:id", (req, res) => {
   try {
     deleteBackup(req.params.id);
     res.json({ ok: true });
@@ -3139,14 +3631,14 @@ app.delete('/api/backups/:id', (req, res) => {
   }
 });
 
-app.get('/api/files', (req, res) => {
+app.get("/api/files", (req, res) => {
   res.json(getManagedFilesOverview());
 });
 
-app.get('/api/files/read', (req, res) => {
-  const spec = getManagedFileSpec(String(req.query.key || ''));
+app.get("/api/files/read", (req, res) => {
+  const spec = getManagedFileSpec(String(req.query.key || ""));
   if (!spec) {
-    res.status(404).json({ error: 'Unknown file' });
+    res.status(404).json({ error: "Unknown file" });
     return;
   }
   const filePath = spec.resolve();
@@ -3156,12 +3648,12 @@ app.get('/api/files/read', (req, res) => {
       label: spec.label,
       editable: spec.editable,
       exists: false,
-      content: '',
+      content: "",
       sha256: null,
     });
     return;
   }
-  const content = fs.readFileSync(filePath, 'utf8');
+  const content = fs.readFileSync(filePath, "utf8");
   const integrity = updateIntegrityRecord(filePath, { label: spec.label });
   res.json({
     key: spec.key,
@@ -3173,16 +3665,16 @@ app.get('/api/files/read', (req, res) => {
   });
 });
 
-app.post('/api/files/write', (req, res) => {
-  const spec = getManagedFileSpec(String(req.body?.key || ''));
+app.post("/api/files/write", (req, res) => {
+  const spec = getManagedFileSpec(String(req.body?.key || ""));
   if (!spec || !spec.editable) {
-    res.json({ error: 'That file cannot be edited here' });
+    res.json({ error: "That file cannot be edited here" });
     return;
   }
   try {
     const filePath = spec.resolve();
     ensureDir(path.dirname(filePath));
-    fs.writeFileSync(filePath, String(req.body?.content || ''));
+    fs.writeFileSync(filePath, String(req.body?.content || ""));
     const integrity = updateIntegrityRecord(filePath, { label: spec.label });
     res.json({ ok: true, sha256: integrity ? integrity.sha256 : null });
   } catch (error) {
@@ -3190,7 +3682,7 @@ app.post('/api/files/write', (req, res) => {
   }
 });
 
-app.get('/api/admin/:type', (req, res) => {
+app.get("/api/admin/:type", (req, res) => {
   try {
     res.json({ entries: readAdminList(req.params.type) });
   } catch (error) {
@@ -3198,7 +3690,7 @@ app.get('/api/admin/:type', (req, res) => {
   }
 });
 
-app.post('/api/admin/:type', async (req, res) => {
+app.post("/api/admin/:type", async (req, res) => {
   try {
     const entry = await addAdminEntry(req.params.type, req.body || {});
     res.json({ ok: true, entry });
@@ -3207,7 +3699,7 @@ app.post('/api/admin/:type', async (req, res) => {
   }
 });
 
-app.delete('/api/admin/:type/:name', (req, res) => {
+app.delete("/api/admin/:type/:name", (req, res) => {
   try {
     removeAdminEntry(req.params.type, decodeURIComponent(req.params.name));
     res.json({ ok: true });
@@ -3216,26 +3708,34 @@ app.delete('/api/admin/:type/:name', (req, res) => {
   }
 });
 
-app.get('/api/plugins', (req, res) => {
-  res.json({ plugins: listSimpleDir(path.join(CONFIG.serverDir, 'plugins'), ['.jar']) });
+app.get("/api/plugins", (req, res) => {
+  res.json({
+    plugins: listSimpleDir(path.join(CONFIG.serverDir, "plugins"), [".jar"]),
+  });
 });
 
-app.get('/api/mods', (req, res) => {
-  res.json({ mods: listSimpleDir(path.join(CONFIG.serverDir, 'mods'), ['.jar']) });
+app.get("/api/mods", (req, res) => {
+  res.json({
+    mods: listSimpleDir(path.join(CONFIG.serverDir, "mods"), [".jar"]),
+  });
 });
 
-app.post('/api/mods/upload', (req, res) => {
+app.post("/api/mods/upload", (req, res) => {
   try {
-    res.json(saveUploadedJar('mods', req.body?.filename, req.body?.data));
+    res.json(saveUploadedJar("mods", req.body?.filename, req.body?.data));
   } catch (error) {
     res.json({ error: error.message });
   }
 });
 
-app.delete('/api/mods/:name', (req, res) => {
-  const filePath = path.join(CONFIG.serverDir, 'mods', path.basename(req.params.name));
+app.delete("/api/mods/:name", (req, res) => {
+  const filePath = path.join(
+    CONFIG.serverDir,
+    "mods",
+    path.basename(req.params.name),
+  );
   if (!fs.existsSync(filePath)) {
-    res.json({ error: 'File not found' });
+    res.json({ error: "File not found" });
     return;
   }
   fs.unlinkSync(filePath);
@@ -3244,18 +3744,22 @@ app.delete('/api/mods/:name', (req, res) => {
   res.json({ ok: true });
 });
 
-app.post('/api/plugins/upload', (req, res) => {
+app.post("/api/plugins/upload", (req, res) => {
   try {
-    res.json(saveUploadedJar('plugins', req.body?.filename, req.body?.data));
+    res.json(saveUploadedJar("plugins", req.body?.filename, req.body?.data));
   } catch (error) {
     res.json({ error: error.message });
   }
 });
 
-app.delete('/api/plugins/:name', (req, res) => {
-  const filePath = path.join(CONFIG.serverDir, 'plugins', path.basename(req.params.name));
+app.delete("/api/plugins/:name", (req, res) => {
+  const filePath = path.join(
+    CONFIG.serverDir,
+    "plugins",
+    path.basename(req.params.name),
+  );
   if (!fs.existsSync(filePath)) {
-    res.json({ error: 'File not found' });
+    res.json({ error: "File not found" });
     return;
   }
   fs.unlinkSync(filePath);
@@ -3265,9 +3769,9 @@ app.delete('/api/plugins/:name', (req, res) => {
 });
 
 function getMojangManifest() {
-  return cachedUpstream('mojang:manifest', VERSION_CACHE_TTL_MS, () => (
-    httpsGet('https://piston-meta.mojang.com/mc/game/version_manifest_v2.json')
-  ));
+  return cachedUpstream("mojang:manifest", VERSION_CACHE_TTL_MS, () =>
+    httpsGet("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"),
+  );
 }
 
 function versionListEndpoint(key, ttlMs, loader) {
@@ -3280,78 +3784,123 @@ function versionListEndpoint(key, ttlMs, loader) {
   };
 }
 
-app.get('/api/versions/paper', versionListEndpoint('versions:paper', VERSION_CACHE_TTL_MS, async () => {
-  // Fill v3 groups versions by release family, newest first.
-  const data = await httpsGet('https://fill.papermc.io/v3/projects/paper');
-  return { versions: Object.values(data.versions || {}).flat() };
-}));
+app.get(
+  "/api/versions/paper",
+  versionListEndpoint("versions:paper", VERSION_CACHE_TTL_MS, async () => {
+    // Fill v3 groups versions by release family, newest first.
+    const data = await httpsGet("https://fill.papermc.io/v3/projects/paper");
+    return { versions: Object.values(data.versions || {}).flat() };
+  }),
+);
 
-app.get('/api/versions/purpur', versionListEndpoint('versions:purpur', VERSION_CACHE_TTL_MS, async () => {
-  const data = await httpsGet('https://api.purpurmc.org/v2/purpur');
-  return { versions: [...(data.versions || [])].reverse() };
-}));
+app.get(
+  "/api/versions/purpur",
+  versionListEndpoint("versions:purpur", VERSION_CACHE_TTL_MS, async () => {
+    const data = await httpsGet("https://api.purpurmc.org/v2/purpur");
+    return { versions: [...(data.versions || [])].reverse() };
+  }),
+);
 
-app.get('/api/versions/vanilla', versionListEndpoint('versions:vanilla', VERSION_CACHE_TTL_MS, async () => {
-  const manifest = await getMojangManifest();
-  const releases = manifest.versions.filter((entry) => entry.type === 'release');
-  return {
-    versions: releases.map((entry) => entry.id),
-    urls: Object.fromEntries(releases.map((entry) => [entry.id, entry.url])),
-  };
-}));
+app.get(
+  "/api/versions/vanilla",
+  versionListEndpoint("versions:vanilla", VERSION_CACHE_TTL_MS, async () => {
+    const manifest = await getMojangManifest();
+    const releases = manifest.versions.filter(
+      (entry) => entry.type === "release",
+    );
+    return {
+      versions: releases.map((entry) => entry.id),
+      urls: Object.fromEntries(releases.map((entry) => [entry.id, entry.url])),
+    };
+  }),
+);
 
-app.get('/api/versions/nukkit', versionListEndpoint('versions:nukkit', 30 * 60 * 1000, async () => {
-  const releases = await fetchGitHubReleases('CloudburstMC/Nukkit');
-  return {
-    versions: releases
-      .map((release) => String(release.tag_name || '').replace(/^v/i, ''))
-      .filter(Boolean),
-  };
-}));
+app.get(
+  "/api/versions/nukkit",
+  versionListEndpoint("versions:nukkit", 30 * 60 * 1000, async () => {
+    const releases = await fetchGitHubReleases("CloudburstMC/Nukkit");
+    return {
+      versions: releases
+        .map((release) => String(release.tag_name || "").replace(/^v/i, ""))
+        .filter(Boolean),
+    };
+  }),
+);
 
-app.get('/api/versions/fabric', versionListEndpoint('versions:fabric', VERSION_CACHE_TTL_MS, async () => {
-  const versions = await httpsGet('https://meta.fabricmc.net/v2/versions/game');
-  return { versions: versions.filter((entry) => entry.stable).map((entry) => entry.version) };
-}));
+app.get(
+  "/api/versions/fabric",
+  versionListEndpoint("versions:fabric", VERSION_CACHE_TTL_MS, async () => {
+    const versions = await httpsGet(
+      "https://meta.fabricmc.net/v2/versions/game",
+    );
+    return {
+      versions: versions
+        .filter((entry) => entry.stable)
+        .map((entry) => entry.version),
+    };
+  }),
+);
 
-app.get('/api/versions/forge', versionListEndpoint('versions:forge', VERSION_CACHE_TTL_MS, async () => {
-  const data = await httpsGet('https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json');
-  const versions = [];
-  const seen = new Set();
-  Object.entries(data.promos || {}).forEach(([key, forgeVersion]) => {
-    const match = key.match(/^(.+)-(latest|recommended)$/);
-    if (!match) {
-      return;
-    }
-    const mcVersion = match[1];
-    const label = `${mcVersion} - ${forgeVersion} (${match[2]})`;
-    const dedupeKey = `${mcVersion}-${forgeVersion}`;
-    if (!seen.has(dedupeKey)) {
-      seen.add(dedupeKey);
-      versions.push(label);
-    }
-  });
-  return { versions: versions.reverse() };
-}));
+app.get(
+  "/api/versions/forge",
+  versionListEndpoint("versions:forge", VERSION_CACHE_TTL_MS, async () => {
+    const data = await httpsGet(
+      "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json",
+    );
+    const versions = [];
+    const seen = new Set();
+    Object.entries(data.promos || {}).forEach(([key, forgeVersion]) => {
+      const match = key.match(/^(.+)-(latest|recommended)$/);
+      if (!match) {
+        return;
+      }
+      const mcVersion = match[1];
+      const label = `${mcVersion} - ${forgeVersion} (${match[2]})`;
+      const dedupeKey = `${mcVersion}-${forgeVersion}`;
+      if (!seen.has(dedupeKey)) {
+        seen.add(dedupeKey);
+        versions.push(label);
+      }
+    });
+    return { versions: versions.reverse() };
+  }),
+);
 
-app.get('/api/versions/neoforge', versionListEndpoint('versions:neoforge', VERSION_CACHE_TTL_MS, async () => {
-  const xml = await httpsGetRaw('https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml');
-  const versions = parseXmlVersions(xml).filter((version) => !/(alpha|beta|snapshot)/i.test(version));
-  return { versions: versions.reverse() };
-}));
+app.get(
+  "/api/versions/neoforge",
+  versionListEndpoint("versions:neoforge", VERSION_CACHE_TTL_MS, async () => {
+    const xml = await httpsGetRaw(
+      "https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml",
+    );
+    const versions = parseXmlVersions(xml).filter(
+      (version) => !/(alpha|beta|snapshot)/i.test(version),
+    );
+    return { versions: versions.reverse() };
+  }),
+);
 
-app.get('/api/versions/quilt', versionListEndpoint('versions:quilt', VERSION_CACHE_TTL_MS, async () => {
-  const versions = await httpsGet('https://meta.quiltmc.org/v3/versions/game');
-  return { versions: versions.filter((entry) => entry.stable).map((entry) => entry.version) };
-}));
+app.get(
+  "/api/versions/quilt",
+  versionListEndpoint("versions:quilt", VERSION_CACHE_TTL_MS, async () => {
+    const versions = await httpsGet(
+      "https://meta.quiltmc.org/v3/versions/game",
+    );
+    return {
+      versions: versions
+        .filter((entry) => entry.stable)
+        .map((entry) => entry.version),
+    };
+  }),
+);
 
-app.post('/api/download', async (req, res) => {
-  const type = String(req.body?.type || '').trim();
-  const version = String(req.body?.version || '').trim();
+app.post("/api/download", async (req, res) => {
+  const type = String(req.body?.type || "").trim();
+  const version = String(req.body?.version || "").trim();
   const force = !!req.body?.force;
-  const sameVersion = CONFIG.serverType === type && CONFIG.serverVersion === version;
+  const sameVersion =
+    CONFIG.serverType === type && CONFIG.serverVersion === version;
   if (!type || !version) {
-    res.json({ error: 'Type and version are required' });
+    res.json({ error: "Type and version are required" });
     return;
   }
   if (sameVersion && !force) {
@@ -3367,26 +3916,38 @@ app.post('/api/download', async (req, res) => {
   try {
     await handleServerDownload(type, version);
   } catch (error) {
-    downloadState = downloadState || { name: `${type}-${version}`, progress: 0, total: 0, done: false, error: null };
+    downloadState = downloadState || {
+      name: `${type}-${version}`,
+      progress: 0,
+      total: 0,
+      done: false,
+      error: null,
+    };
     downloadState.error = error.message;
-    addLog(`Download error: ${error.message}`, 'error');
-    broadcast({ type: 'download', ...downloadState });
+    addLog(`Download error: ${error.message}`, "error");
+    broadcast({ type: "download", ...downloadState });
   }
 });
 
-app.post('/api/crossplay/install', async (req, res) => {
+app.post("/api/crossplay/install", async (req, res) => {
   try {
     await installCrossplayPlugins();
     res.json({ ok: true });
   } catch (error) {
-    downloadState = downloadState || { name: 'Crossplay install', progress: 0, total: 0, done: false, error: null };
+    downloadState = downloadState || {
+      name: "Crossplay install",
+      progress: 0,
+      total: 0,
+      done: false,
+      error: null,
+    };
     downloadState.error = error.message;
-    broadcast({ type: 'download', ...downloadState });
+    broadcast({ type: "download", ...downloadState });
     res.status(400).json({ error: error.message });
   }
 });
 
-app.get('/api/integrity', (req, res) => {
+app.get("/api/integrity", (req, res) => {
   res.json({
     records: INTEGRITY.records,
     lastDownloadedChecksum: CONFIG.lastDownloadedChecksum || null,
@@ -3394,14 +3955,14 @@ app.get('/api/integrity', (req, res) => {
   });
 });
 
-app.get('/api/validation', (req, res) => {
+app.get("/api/validation", (req, res) => {
   res.json(collectValidation());
 });
 
 app.use(express.static(STATIC_DIR));
 
-app.get('/', (req, res) => {
-  res.sendFile(path.join(STATIC_DIR, 'index.html'));
+app.get("/", (req, res) => {
+  res.sendFile(path.join(STATIC_DIR, "index.html"));
 });
 
 updateSystemStats();
@@ -3409,7 +3970,7 @@ setInterval(updateSystemStats, 1000);
 setInterval(maybeRunScheduledTasks, 30 * 1000);
 setInterval(() => {
   maybeRunDuckDnsUpdate().catch((error) => {
-    addLog(`DuckDNS scheduler error: ${error.message}`, 'warn');
+    addLog(`DuckDNS scheduler error: ${error.message}`, "warn");
   });
 }, 60 * 1000);
 
@@ -3419,50 +3980,62 @@ function createPanelServer() {
       key: fs.readFileSync(CONFIG.httpsKeyPath),
       cert: fs.readFileSync(CONFIG.httpsCertPath),
     };
-    return { instance: https.createServer(tlsOptions, app), protocol: 'https', port: CONFIG.httpsPort };
+    return {
+      instance: https.createServer(tlsOptions, app),
+      protocol: "https",
+      port: CONFIG.httpsPort,
+    };
   }
-  return { instance: http.createServer(app), protocol: 'http', port: CONFIG.uiPort };
+  return {
+    instance: http.createServer(app),
+    protocol: "http",
+    port: CONFIG.uiPort,
+  };
 }
 
 const panelServer = createPanelServer();
 server = panelServer.instance;
 wss = new WebSocketServer({ server });
 
-wss.on('connection', (socket, req) => {
+wss.on("connection", (socket, req) => {
   if (ACCESS.authRequired && !getSessionFromRequest(req)) {
-    socket.close(4001, 'auth');
+    socket.close(4001, "auth");
     return;
   }
 
-  socket.send(JSON.stringify({ type: 'history', logs: logHistory }));
-  socket.send(JSON.stringify({ type: 'status', ...buildStatusPayload() }));
-  socket.send(JSON.stringify({ type: 'config', config: getPublicConfig() }));
-  socket.send(JSON.stringify({ type: 'stats', ...systemStats }));
+  socket.send(JSON.stringify({ type: "history", logs: logHistory }));
+  socket.send(JSON.stringify({ type: "status", ...buildStatusPayload() }));
+  socket.send(JSON.stringify({ type: "config", config: getPublicConfig() }));
+  socket.send(JSON.stringify({ type: "stats", ...systemStats }));
   if (downloadState) {
-    socket.send(JSON.stringify({ type: 'download', ...downloadState }));
+    socket.send(JSON.stringify({ type: "download", ...downloadState }));
   }
 
   const tick = setInterval(() => {
     if (socket.readyState === 1) {
-      socket.send(JSON.stringify({ type: 'uptime', uptime: getUptime() }));
+      socket.send(JSON.stringify({ type: "uptime", uptime: getUptime() }));
     } else {
       clearInterval(tick);
     }
   }, 1000);
 
-  socket.on('close', () => {
+  socket.on("close", () => {
     clearInterval(tick);
   });
-  socket.on('error', () => {
+  socket.on("error", () => {
     clearInterval(tick);
   });
 });
 
-server.listen(panelServer.port, '0.0.0.0', () => {
+server.listen(panelServer.port, "0.0.0.0", () => {
   const network = getNetworkInfo();
-  console.log(`\n  TermuCraft panel: ${panelServer.protocol}://localhost:${panelServer.port}`);
-  console.log(`  LAN address:   ${panelServer.protocol}://${network.lanIp}:${panelServer.port}\n`);
+  console.log(
+    `\n  TermuCraft panel: ${panelServer.protocol}://localhost:${panelServer.port}`,
+  );
+  console.log(
+    `  LAN address:   ${panelServer.protocol}://${network.lanIp}:${panelServer.port}\n`,
+  );
   maybeRunDuckDnsUpdate().catch((error) => {
-    addLog(`DuckDNS startup error: ${error.message}`, 'warn');
+    addLog(`DuckDNS startup error: ${error.message}`, "warn");
   });
 });
