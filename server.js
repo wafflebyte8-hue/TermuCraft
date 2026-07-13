@@ -2027,6 +2027,131 @@ function suggestTermuxJdkPackage(requiredMajor) {
   return "openjdk-17";
 }
 
+const TERMUX_PREFIX = process.env.PREFIX || "/data/data/com.termux/files/usr";
+
+function isTermux() {
+  return fs.existsSync("/data/data/com.termux");
+}
+
+// Termux JDK packages live side by side in $PREFIX/lib/jvm and manage
+// $PREFIX/bin/java through an alternatives symlink - installing openjdk-25
+// does NOT necessarily repoint `java`. Scan the JVM dirs so the panel can
+// launch the right one directly, whatever the symlink says.
+function listInstalledJvms() {
+  const jvms = [];
+  [path.join(TERMUX_PREFIX, "lib", "jvm"), "/usr/lib/jvm"].forEach((root) => {
+    let entries = [];
+    try {
+      entries = fs.readdirSync(root);
+    } catch {
+      return;
+    }
+    entries.forEach((name) => {
+      const match = name.match(/(?:java|jdk)-?(\d+)/i);
+      const binPath = path.join(root, name, "bin", "java");
+      if (match && Number(match[1]) >= 8 && fs.existsSync(binPath)) {
+        jvms.push({ major: Number(match[1]), path: binPath });
+      }
+    });
+  });
+  return jvms.sort((left, right) => right.major - left.major);
+}
+
+// Returns the java binary to launch with, or null when nothing installed
+// satisfies the requirement. Prefers the configured javaPath when it is
+// already good enough.
+function resolveJavaBinary(requiredMajor) {
+  const configured = CONFIG.javaPath || "java";
+  const configuredMajor = getInstalledJavaMajor();
+  if (!requiredMajor || (configuredMajor && configuredMajor >= requiredMajor)) {
+    return { path: configured, major: configuredMajor, discovered: false };
+  }
+  const candidate = listInstalledJvms().find(
+    (jvm) => jvm.major >= requiredMajor,
+  );
+  if (candidate) {
+    return { path: candidate.path, major: candidate.major, discovered: true };
+  }
+  return null;
+}
+
+let jdkInstall = null;
+
+// Kick off `pkg install openjdk-X` in the background (Termux only), with
+// output streamed to the panel console. Returns the install state, or null
+// when auto-install is not possible here.
+function beginJdkInstall(requiredMajor) {
+  if (jdkInstall && !jdkInstall.finishedAt) {
+    return jdkInstall;
+  }
+  if (!isTermux() || !commandExists("pkg")) {
+    return null;
+  }
+  const pkgName = suggestTermuxJdkPackage(requiredMajor);
+  jdkInstall = {
+    pkg: pkgName,
+    startedAt: Date.now(),
+    finishedAt: null,
+    ok: false,
+    error: "",
+  };
+  addLog(
+    `--- Installing ${pkgName} automatically, this can take a few minutes ---`,
+    "system",
+  );
+  const child = spawn("pkg", ["install", "-y", pkgName], {
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, DEBIAN_FRONTEND: "noninteractive" },
+  });
+  const relay = (chunk, type) => {
+    String(chunk)
+      .split("\n")
+      .forEach((line) => {
+        if (line.trim()) {
+          addLog(`[jdk] ${line}`, type);
+        }
+      });
+  };
+  child.stdout.on("data", (chunk) => relay(chunk, "log"));
+  child.stderr.on("data", (chunk) => relay(chunk, "warn"));
+  child.on("error", (error) => {
+    jdkInstall.finishedAt = Date.now();
+    jdkInstall.error = error.message;
+    addLog(
+      `--- ${pkgName} install failed: ${error.message}. Run manually: pkg install ${pkgName} ---`,
+      "error",
+    );
+  });
+  child.on("exit", (code) => {
+    if (jdkInstall.finishedAt) {
+      return;
+    }
+    jdkInstall.finishedAt = Date.now();
+    jdkInstall.ok = code === 0;
+    if (code === 0) {
+      addLog(
+        `--- ${pkgName} installed. Press Start to launch the server. ---`,
+        "system",
+      );
+    } else {
+      jdkInstall.error = `exit ${code}`;
+      addLog(
+        `--- ${pkgName} install failed (exit ${code}). Run manually: pkg install ${pkgName} ---`,
+        "error",
+      );
+    }
+  });
+  return jdkInstall;
+}
+
+// After a download records its Java requirement, start fetching the JDK
+// right away so it is usually ready before the first Start click.
+function ensureSuitableJava(requiredMajor) {
+  if (requiredMajor && !resolveJavaBinary(requiredMajor)) {
+    beginJdkInstall(requiredMajor);
+  }
+}
+
 // Mojang's per-version metadata declares the Java major each Minecraft
 // version needs (e.g. 1.21.x -> 21, 26.x -> 25). Paper/Purpur/Fabric/Quilt
 // version ids match vanilla ids, so one lookup covers them all.
@@ -2083,8 +2208,8 @@ function collectValidation() {
     ? Number(memoryMatch[1]) * (memoryMatch[2] === "G" ? 1024 : 1)
     : 0;
   const javaVersionLine = getJavaVersion();
-  const installedJavaMajor = getInstalledJavaMajor(javaVersionLine);
   const requiredJavaMajor = Number(CONFIG.requiredJavaMajor) || 0;
+  const javaFit = requiredJavaMajor ? resolveJavaBinary(requiredJavaMajor) : null;
   const checks = [
     {
       label: "Termux environment",
@@ -2100,12 +2225,11 @@ function collectValidation() {
     },
     {
       label: "Java fits server version",
-      ok:
-        !requiredJavaMajor ||
-        !installedJavaMajor ||
-        installedJavaMajor >= requiredJavaMajor,
+      ok: !requiredJavaMajor || !!javaFit,
       detail: requiredJavaMajor
-        ? `Server needs Java ${requiredJavaMajor}+, installed: ${installedJavaMajor ? `Java ${installedJavaMajor}` : "unknown"}`
+        ? javaFit
+          ? `Server needs Java ${requiredJavaMajor}+, will launch with Java ${javaFit.major || "unknown"}${javaFit.discovered ? ` (${javaFit.path})` : ""}`
+          : `Server needs Java ${requiredJavaMajor}+, none installed - ${isTermux() ? `the panel will install ${suggestTermuxJdkPackage(requiredJavaMajor)} on Start` : `install ${suggestTermuxJdkPackage(requiredJavaMajor)}`}`
         : "No requirement recorded yet (download a server version to check)",
     },
     {
@@ -2291,14 +2415,30 @@ function startServer(reason = "manual") {
   ensureDir(CONFIG.serverDir);
   ensureJarExists();
 
-  // Fail fast with a clear message instead of spawn-crash-looping when the
-  // installed Java is too old for the downloaded server version.
+  // Pick a Java that satisfies the downloaded server version. If none is
+  // installed, auto-install it (Termux) instead of spawn-crash-looping.
   const requiredJava = Number(CONFIG.requiredJavaMajor) || 0;
-  const installedJava = getInstalledJavaMajor();
-  if (requiredJava && installedJava && installedJava < requiredJava) {
+  const resolvedJava = resolveJavaBinary(requiredJava);
+  if (!resolvedJava) {
+    const pkgName = suggestTermuxJdkPackage(requiredJava);
+    if (jdkInstall && !jdkInstall.finishedAt) {
+      throw new Error(
+        `Java ${requiredJava}+ is still installing (${jdkInstall.pkg}). Watch the console and press Start again when it finishes.`,
+      );
+    }
+    if (beginJdkInstall(requiredJava)) {
+      throw new Error(
+        `This server needs Java ${requiredJava}+. Installing ${pkgName} automatically now - press Start again once the console says it finished.`,
+      );
+    }
     throw new Error(
-      `${CONFIG.serverType || "This server"} ${CONFIG.serverVersion || ""} needs Java ${requiredJava}+ but "${CONFIG.javaPath}" is Java ${installedJava}. ` +
-        `In Termux run: pkg install ${suggestTermuxJdkPackage(requiredJava)}`,
+      `${CONFIG.serverType || "This server"} ${CONFIG.serverVersion || ""} needs Java ${requiredJava}+ but only Java ${getInstalledJavaMajor() || "unknown"} is available. Run: pkg install ${pkgName}`,
+    );
+  }
+  if (resolvedJava.discovered) {
+    addLog(
+      `--- Using Java ${resolvedJava.major} at ${resolvedJava.path} ---`,
+      "system",
     );
   }
 
@@ -2320,7 +2460,7 @@ function startServer(reason = "manual") {
     launchArgs.push("nogui");
   }
 
-  const child = spawn(CONFIG.javaPath, launchArgs, {
+  const child = spawn(resolvedJava.path, launchArgs, {
     cwd: CONFIG.serverDir,
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -2697,12 +2837,38 @@ async function performServerDownload(type, version) {
   CONFIG.lastDownloadedChecksum = (integrity && integrity.sha256) || "";
   CONFIG.lastDownloadedChecksumType = integrity?.sha256 ? "sha256" : "";
   saveConfig();
+  ensureSuitableJava(requiredJavaMajor);
   fs.writeFileSync(path.join(CONFIG.serverDir, "eula.txt"), "eula=true\n");
   downloadState.done = true;
   downloadState.checksum = (integrity && integrity.sha256) || null;
   broadcast({ type: "download", ...downloadState });
   broadcast({ type: "config", config: getPublicConfig() });
   broadcast({ type: "jarReady" });
+}
+
+// Installers are Java programs too - run them with a JVM that fits the
+// target Minecraft version, kicking off an auto-install when none does.
+async function pickInstallerJava(mcVersion) {
+  const required = mcVersion ? await lookupRequiredJavaMajor(mcVersion) : 0;
+  const resolved = resolveJavaBinary(required);
+  if (resolved) {
+    if (resolved.discovered) {
+      addLog(
+        `--- Using Java ${resolved.major} at ${resolved.path} for the installer ---`,
+        "system",
+      );
+    }
+    return resolved.path;
+  }
+  const pkgName = suggestTermuxJdkPackage(required);
+  if (beginJdkInstall(required)) {
+    throw new Error(
+      `This version needs Java ${required}+. Installing ${pkgName} automatically now - retry once the console says it finished.`,
+    );
+  }
+  throw new Error(
+    `This version needs Java ${required}+. Run: pkg install ${pkgName}`,
+  );
 }
 
 async function performInstallerDownload(type, version) {
@@ -2739,7 +2905,7 @@ async function performInstallerDownload(type, version) {
     downloadState.name = `fabric-${version} (installing)`;
     broadcast({ type: "download", ...downloadState });
     await runLoggedProcess(
-      CONFIG.javaPath,
+      await pickInstallerJava(version),
       [
         "-jar",
         installerPath,
@@ -2814,7 +2980,7 @@ async function performInstallerDownload(type, version) {
     downloadState.name = `quilt-${version} (installing)`;
     broadcast({ type: "download", ...downloadState });
     await runLoggedProcess(
-      CONFIG.javaPath,
+      await pickInstallerJava(version),
       [
         "-jar",
         installerPath,
@@ -2891,7 +3057,7 @@ async function performInstallerDownload(type, version) {
     downloadState.name = `forge-${mcVersion}-${forgeVersion} (installing)`;
     broadcast({ type: "download", ...downloadState });
     await runLoggedProcess(
-      CONFIG.javaPath,
+      await pickInstallerJava(mcVersion),
       ["-jar", installerPath, "--installServer"],
       CONFIG.serverDir,
       "Forge installer",
@@ -2954,7 +3120,7 @@ async function performInstallerDownload(type, version) {
     downloadState.name = `neoforge-${version} (installing)`;
     broadcast({ type: "download", ...downloadState });
     await runLoggedProcess(
-      CONFIG.javaPath,
+      await pickInstallerJava(null),
       ["-jar", installerPath, "--installServer", ".", "--serverJar"],
       CONFIG.serverDir,
       "NeoForge installer",

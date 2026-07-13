@@ -1,6 +1,6 @@
 {
   "name": "termucraft",
-  "version": "0.7.4",
+  "version": "0.7.5",
   "description": "TermuCraft - Minecraft Server Panel for Termux",
   "main": "server.js",
   "scripts": {
