@@ -77,6 +77,7 @@ const CONFIG_DEFAULTS = {
   duckDnsIntervalMinutes: 10,
   lastDownloadedChecksum: '',
   lastDownloadedChecksumType: '',
+  requiredJavaMajor: 0,
 };
 
 const PRESETS = {
@@ -151,6 +152,7 @@ let crashState = {
   lastCrashCode: null,
   lastCrashSignal: null,
 };
+let rapidCrashCount = 0;
 let schedulerState = {
   lastBackupAt: 0,
   lastBroadcastAt: 0,
@@ -1786,12 +1788,69 @@ function getJavaVersion() {
   return output || 'Unavailable';
 }
 
+function getInstalledJavaMajor(versionLine = getJavaVersion()) {
+  const match = String(versionLine).match(/version "?(\d+)(?:\.(\d+))?/);
+  if (!match) {
+    return 0;
+  }
+  const major = Number(match[1]);
+  // Legacy versioning: "1.8.0" means Java 8.
+  return major === 1 ? Number(match[2]) || 0 : major;
+}
+
+function suggestTermuxJdkPackage(requiredMajor) {
+  if (requiredMajor >= 22) return 'openjdk-25';
+  if (requiredMajor >= 18) return 'openjdk-21';
+  return 'openjdk-17';
+}
+
+// Mojang's per-version metadata declares the Java major each Minecraft
+// version needs (e.g. 1.21.x -> 21, 26.x -> 25). Paper/Purpur/Fabric/Quilt
+// version ids match vanilla ids, so one lookup covers them all.
+async function lookupRequiredJavaMajor(mcVersion) {
+  try {
+    const manifest = await getMojangManifest();
+    const entry = (manifest.versions || []).find((item) => item.id === mcVersion);
+    if (!entry?.url) {
+      return 0;
+    }
+    const detail = await cachedUpstream(`mojang:version:${mcVersion}`, 24 * 60 * 60 * 1000, () => httpsGet(entry.url));
+    return Number(detail?.javaVersion?.majorVersion) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+function explainCrash(outputLines) {
+  const text = outputLines.join('\n');
+  const classVer = text.match(/class file version (\d+)/);
+  if (classVer || /UnsupportedClassVersionError/.test(text)) {
+    const required = classVer ? Number(classVer[1]) - 44 : 0;
+    const installed = getInstalledJavaMajor();
+    const need = required ? `Java ${required}+` : 'a newer Java';
+    return `This server version needs ${need} but Java ${installed || 'unknown'} is installed. In Termux run: pkg install ${suggestTermuxJdkPackage(required || 22)}`;
+  }
+  if (/java\.lang\.OutOfMemoryError|Could not reserve enough space/i.test(text)) {
+    return 'Java could not get enough memory. Lower the RAM allocation in Control, or close other apps.';
+  }
+  if (/Invalid or corrupt jarfile|zip END header not found/i.test(text)) {
+    return 'The server jar looks corrupt or incomplete. Re-download the server version in Builds.';
+  }
+  if (/Failed to bind to port|Address already in use/i.test(text)) {
+    return 'The Minecraft port is already in use. Another server instance is probably still running.';
+  }
+  return '';
+}
+
 function collectValidation() {
   const totalRamMB = Math.round(os.totalmem() / 1024 / 1024);
   const memoryMatch = String(CONFIG.memory || '').trim().toUpperCase().match(/^(\d+(?:\.\d+)?)([MG])$/);
   const configuredRamMB = memoryMatch
     ? Number(memoryMatch[1]) * (memoryMatch[2] === 'G' ? 1024 : 1)
     : 0;
+  const javaVersionLine = getJavaVersion();
+  const installedJavaMajor = getInstalledJavaMajor(javaVersionLine);
+  const requiredJavaMajor = Number(CONFIG.requiredJavaMajor) || 0;
   const checks = [
     {
       label: 'Termux environment',
@@ -1800,8 +1859,15 @@ function collectValidation() {
     },
     {
       label: 'Java runtime',
-      ok: getJavaVersion() !== 'Unavailable',
-      detail: getJavaVersion(),
+      ok: javaVersionLine !== 'Unavailable',
+      detail: javaVersionLine,
+    },
+    {
+      label: 'Java fits server version',
+      ok: !requiredJavaMajor || !installedJavaMajor || installedJavaMajor >= requiredJavaMajor,
+      detail: requiredJavaMajor
+        ? `Server needs Java ${requiredJavaMajor}+, installed: ${installedJavaMajor ? `Java ${installedJavaMajor}` : 'unknown'}`
+        : 'No requirement recorded yet (download a server version to check)',
     },
     {
       label: 'Node.js runtime',
@@ -1821,7 +1887,7 @@ function collectValidation() {
       {
         label: 'Panel auth',
         ok: true,
-        detail: ACCESS.authRequired ? (ACCESS.flags?.bootstrap ? 'Bootstrap credentials still active' : `Configured for ${ACCESS.profile.handle}`) : 'Disabled in this build',
+        detail: ACCESS.authRequired ? (ACCESS.flags?.bootstrap ? 'Bootstrap credentials still active' : `Configured for ${ACCESS.profile?.handle || 'pending setup'}`) : 'Disabled in this build',
       },
     {
       label: 'Wake lock command',
@@ -1853,7 +1919,7 @@ function collectValidation() {
   ];
 
   return {
-    javaVersion: getJavaVersion(),
+    javaVersion: javaVersionLine,
     nodeVersion: process.version,
     totalRamMB,
     configuredRamMB,
@@ -1869,11 +1935,21 @@ function collectValidation() {
 
 function attachMcProcess(processHandle) {
   mcProcess = processHandle;
+  const recentOutput = [];
+  const remember = (line, type) => {
+    addLog(line, type);
+    if (line.trim()) {
+      recentOutput.push(line);
+      if (recentOutput.length > 40) {
+        recentOutput.shift();
+      }
+    }
+  };
   mcProcess.stdout.on('data', (chunk) => {
-    String(chunk).split('\n').forEach((line) => addLog(line, 'log'));
+    String(chunk).split('\n').forEach((line) => remember(line, 'log'));
   });
   mcProcess.stderr.on('data', (chunk) => {
-    String(chunk).split('\n').forEach((line) => addLog(line, 'warn'));
+    String(chunk).split('\n').forEach((line) => remember(line, 'warn'));
   });
   mcProcess.on('error', (error) => {
     addLog(`Process error: ${error.message}`, 'error');
@@ -1882,10 +1958,16 @@ function attachMcProcess(processHandle) {
     const manualRestart = restartRequested;
     const expected = expectedExit;
     const crashed = !expected && !manualRestart;
+    const runMs = startTime ? Date.now() - startTime : 0;
     if (crashed) {
-      const reason = signal ? `Unexpected signal ${signal}` : `Unexpected exit ${code ?? 'unknown'}`;
+      let reason = signal ? `Unexpected signal ${signal}` : `Unexpected exit ${code ?? 'unknown'}`;
+      const hint = explainCrash(recentOutput);
+      if (hint) {
+        reason = `${reason} — ${hint}`;
+        addLog(`--- ${hint} ---`, 'error');
+      }
       appendCrashLog(reason, code, signal);
-      addLog(`--- Crash detected: ${reason} ---`, 'error');
+      addLog(`--- Crash detected: ${signal ? `signal ${signal}` : `exit ${code ?? 'unknown'}`} ---`, 'error');
     } else {
       addLog(`--- Server stopped (exit ${code ?? signal ?? 'unknown'}) ---`, 'system');
     }
@@ -1909,6 +1991,17 @@ function attachMcProcess(processHandle) {
       return;
     }
     if (crashed && CONFIG.autoRestart) {
+      // A server that dies right after starting (bad Java, corrupt jar) will
+      // die the same way every time — do not restart it in a loop forever.
+      if (runMs > 0 && runMs < 30 * 1000) {
+        rapidCrashCount += 1;
+      } else {
+        rapidCrashCount = 0;
+      }
+      if (rapidCrashCount >= 3) {
+        addLog('--- Auto-restart paused: the server crashed 3 times right after starting. Fix the cause above, then press Start. ---', 'error');
+        return;
+      }
       scheduleRestart(Math.max(1, Number.parseInt(CONFIG.autoRestartDelaySec, 10) || 10), 'crash recovery');
     }
   });
@@ -1928,6 +2021,21 @@ function startServer(reason = 'manual') {
   }
   ensureDir(CONFIG.serverDir);
   ensureJarExists();
+
+  // Fail fast with a clear message instead of spawn-crash-looping when the
+  // installed Java is too old for the downloaded server version.
+  const requiredJava = Number(CONFIG.requiredJavaMajor) || 0;
+  const installedJava = getInstalledJavaMajor();
+  if (requiredJava && installedJava && installedJava < requiredJava) {
+    throw new Error(
+      `${CONFIG.serverType || 'This server'} ${CONFIG.serverVersion || ''} needs Java ${requiredJava}+ but "${CONFIG.javaPath}" is Java ${installedJava}. `
+      + `In Termux run: pkg install ${suggestTermuxJdkPackage(requiredJava)}`,
+    );
+  }
+
+  if (reason !== 'crash recovery') {
+    rapidCrashCount = 0;
+  }
   const eulaPath = path.join(CONFIG.serverDir, 'eula.txt');
   if (!fs.existsSync(eulaPath)) {
     fs.writeFileSync(eulaPath, 'eula=true\n');
@@ -2218,6 +2326,7 @@ async function performServerDownload(type, version) {
   const outPath = path.join(CONFIG.serverDir, 'server.jar');
   let downloadUrl = '';
   let expectedChecksum = null;
+  let requiredJavaMajor = 0;
 
   if (type === 'paper') {
     const info = await fetchPaperDownload(version);
@@ -2238,6 +2347,7 @@ async function performServerDownload(type, version) {
     expectedChecksum = details.downloads.server.sha1
       ? { algorithm: 'sha1', value: String(details.downloads.server.sha1).toLowerCase() }
       : null;
+    requiredJavaMajor = Number(details.javaVersion?.majorVersion) || 0;
   } else if (type === 'nukkit') {
     const info = await fetchNukkitDownload(version);
     downloadUrl = info.url;
@@ -2247,6 +2357,10 @@ async function performServerDownload(type, version) {
     throw new Error('Unsupported server type');
   }
 
+  if (type === 'paper' || type === 'purpur') {
+    requiredJavaMajor = await lookupRequiredJavaMajor(version);
+  }
+
   downloadState = { name: `${type}-${version}.jar`, progress: 0, total: 0, done: false, error: null };
   broadcast({ type: 'download', ...downloadState });
   await downloadFileWithProgress(downloadUrl, outPath);
@@ -2254,6 +2368,7 @@ async function performServerDownload(type, version) {
   CONFIG.serverJar = 'server.jar';
   CONFIG.serverType = type;
   CONFIG.serverVersion = version;
+  CONFIG.requiredJavaMajor = requiredJavaMajor;
   CONFIG.lastDownloadedChecksum = (integrity && integrity.sha256) || '';
   CONFIG.lastDownloadedChecksumType = integrity?.sha256 ? 'sha256' : '';
   saveConfig();
@@ -2304,6 +2419,7 @@ async function performInstallerDownload(type, version) {
     CONFIG.serverJar = 'fabric-server-launch.jar';
     CONFIG.serverType = 'fabric';
     CONFIG.serverVersion = version;
+    CONFIG.requiredJavaMajor = await lookupRequiredJavaMajor(version);
     CONFIG.lastDownloadedChecksum = integrity ? integrity.sha256 : '';
     CONFIG.lastDownloadedChecksumType = 'sha256';
     saveConfig();
@@ -2351,6 +2467,7 @@ async function performInstallerDownload(type, version) {
     CONFIG.serverJar = 'quilt-server-launch.jar';
     CONFIG.serverType = 'quilt';
     CONFIG.serverVersion = version;
+    CONFIG.requiredJavaMajor = await lookupRequiredJavaMajor(version);
     CONFIG.lastDownloadedChecksum = integrity ? integrity.sha256 : '';
     CONFIG.lastDownloadedChecksumType = 'sha256';
     saveConfig();
@@ -2406,6 +2523,7 @@ async function performInstallerDownload(type, version) {
     CONFIG.serverJar = chosenJar;
     CONFIG.serverType = 'forge';
     CONFIG.serverVersion = `${mcVersion}-${forgeVersion}`;
+    CONFIG.requiredJavaMajor = await lookupRequiredJavaMajor(mcVersion);
     CONFIG.lastDownloadedChecksum = integrity ? integrity.sha256 : '';
     CONFIG.lastDownloadedChecksumType = 'sha256';
     saveConfig();
@@ -2451,6 +2569,9 @@ async function performInstallerDownload(type, version) {
     CONFIG.serverJar = starterJar;
     CONFIG.serverType = 'neoforge';
     CONFIG.serverVersion = version;
+    // NeoForge version ids do not map to vanilla ids; the crash-time
+    // explainCrash() fallback covers Java mismatches here.
+    CONFIG.requiredJavaMajor = 0;
     CONFIG.lastDownloadedChecksum = integrity ? integrity.sha256 : '';
     CONFIG.lastDownloadedChecksumType = 'sha256';
     saveConfig();

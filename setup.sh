@@ -4,7 +4,7 @@
 set -euo pipefail
 
 APP_NAME="TermuCraft"
-APP_VERSION="0.7.1"
+APP_VERSION="0.7.3"
 REPO_RAW="https://raw.githubusercontent.com/wafflebyte8-hue/TermuCraft/main"
 UI_DIR="$HOME/TermuCraft"
 DEFAULT_SERVER_DIR="$HOME/termucraft-server"
@@ -184,6 +184,30 @@ require_termux() {
   fi
 }
 
+self_update() {
+  # Re-exec guard: never loop even if the comparison misbehaves.
+  [ "${TERMUCRAFT_SETUP_REEXEC:-0}" = "1" ] && { ok "Installer updated to the latest version"; return 0; }
+  # When run as `curl ... | bash`, $0 is not a real file - nothing to update.
+  [ -f "$0" ] || return 0
+  note "Checking for installer updates..."
+  local fresh="$TMP_DIR/setup.sh.latest"
+  if ! curl -fsSL "$REPO_RAW/setup.sh" -o "$fresh" 2>/dev/null; then
+    warn "Could not check for installer updates, continuing with this copy."
+    return 0
+  fi
+  if cmp -s "$fresh" "$0"; then
+    ok "Installer is up to date"
+    return 0
+  fi
+  if ! bash -n "$fresh" 2>/dev/null; then
+    warn "Downloaded installer looks broken, keeping this copy."
+    return 0
+  fi
+  ok "Newer installer found - updating and restarting setup"
+  install -m 0755 "$fresh" "$0" || { warn "Could not replace $0, continuing with this copy."; return 0; }
+  exec env TERMUCRAFT_SETUP_REEXEC=1 bash "$0" "$@"
+}
+
 stop_running_instances() {
   local stopped=0
 
@@ -231,6 +255,18 @@ verify_payload() {
   fi
 }
 
+java_major_installed() {
+  local line major minor
+  line="$(java -version 2>&1 | head -1)"
+  major="$(printf '%s' "$line" | sed -E 's/[^0-9]*([0-9]+).*/\1/')"
+  if [ "${major:-0}" = "1" ]; then
+    minor="$(printf '%s' "$line" | sed -E 's/[^0-9]*1\.([0-9]+).*/\1/')"
+    printf '%s' "${minor:-0}"
+  else
+    printf '%s' "${major:-0}"
+  fi
+}
+
 install_runtime() {
   section "Stage 3 · Installing runtime"
   pkg update -y >/dev/null || warn "pkg update returned warnings."
@@ -247,8 +283,24 @@ install_runtime() {
     fi
   fi
 
+  # Install the newest OpenJDK Termux offers: current Minecraft (26.x)
+  # requires Java 25, and an older JDK makes the server exit instantly.
+  local java_pkg="" desired_pkg="openjdk-21" candidate
+  for candidate in openjdk-25 openjdk-21 openjdk-17; do
+    if apt-cache show "$candidate" >/dev/null 2>&1; then
+      desired_pkg="$candidate"
+      break
+    fi
+  done
+  local desired_major="${desired_pkg#openjdk-}"
+  if command -v java >/dev/null 2>&1 && [ "$(java_major_installed)" -ge "$desired_major" ]; then
+    ok "Existing Java $(java_major_installed) detected, keeping it"
+  else
+    java_pkg="$desired_pkg"
+  fi
+
   # shellcheck disable=SC2086
-  pkg install -y openjdk-21 $node_pkg curl openssl-tool git >/dev/null || die "Failed to install the required runtime packages."
+  pkg install -y $java_pkg $node_pkg curl openssl-tool git >/dev/null || die "Failed to install the required runtime packages."
   ok "Java ready: $(java -version 2>&1 | head -1)"
   ok "Node ready: $(node --version) / npm $(npm --version)"
 
@@ -579,6 +631,7 @@ print_summary() {
 
 main() {
   banner
+  self_update "$@"
   require_termux
   fetch_payload
   verify_payload

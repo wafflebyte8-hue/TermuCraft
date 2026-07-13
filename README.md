@@ -10,7 +10,7 @@
 
 TermuCraft is a web-based Minecraft server panel built for running and managing servers directly from Android through Termux. The goal is to make mobile hosting practical, manageable, and less annoying than doing everything by hand.
 
-Current build: `v0.7.1`
+Current build: `v0.7.3`
 
 ## Install
 
@@ -25,6 +25,8 @@ chmod +x setup.sh
 ```
 
 TermuCraft runs on Node.js 18 or newer (including current Node 24). The installer keeps an existing Termux Node install and only adds `nodejs-lts` when none is present.
+
+The installer updates itself automatically at the start of every run, and installs the newest OpenJDK Termux offers. Note: current Minecraft (26.x) requires Java 25 — if your server exits immediately after starting, run `pkg install openjdk-25`. The panel checks this before starting and tells you exactly which Java the downloaded server needs.
 
 The installer walks you through the panel account:
 
