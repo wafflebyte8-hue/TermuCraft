@@ -4,7 +4,7 @@
 set -euo pipefail
 
 APP_NAME="TermuCraft"
-APP_VERSION="0.6.0"
+APP_VERSION="0.7.0"
 REPO_RAW="https://raw.githubusercontent.com/wafflebyte8-hue/TermuCraft/main"
 UI_DIR="$HOME/TermuCraft"
 DEFAULT_SERVER_DIR="$HOME/termucraft-server"
@@ -98,11 +98,22 @@ prompt_secret_pair() {
     echo ""
     first="${first//$'\r'/}"
     second="${second//$'\r'/}"
-    [ -n "$first" ] || { warn "Password cannot be empty."; continue; }
+    [ "${#first}" -ge 8 ] || { warn "Passphrase must be at least 8 characters."; continue; }
     [ "$first" = "$second" ] && break
-    warn "Passwords did not match."
+    warn "Passphrases did not match."
   done
   printf '%s' "$first"
+}
+
+prompt_panel_handle() {
+  local handle=""
+  while :; do
+    handle="$(prompt_default "Panel handle" "admin")"
+    handle="$(printf '%s' "$handle" | tr '[:upper:]' '[:lower:]')"
+    [[ "$handle" =~ ^[a-z0-9][a-z0-9._-]{1,31}$ ]] && break
+    warn "Use 2-32 characters: letters, numbers, dots, dashes, underscores."
+  done
+  printf '%s' "$handle"
 }
 
 verify_identity_record() {
@@ -223,7 +234,21 @@ verify_payload() {
 install_runtime() {
   section "Stage 3 · Installing runtime"
   pkg update -y >/dev/null || warn "pkg update returned warnings."
-  pkg install -y openjdk-21 nodejs-lts curl openssl-tool git >/dev/null || die "Failed to install the required runtime packages."
+
+  # Termux ships conflicting `nodejs` and `nodejs-lts` packages. If any Node
+  # 18+ is already installed, keep it instead of forcing nodejs-lts on top.
+  local node_pkg="nodejs-lts"
+  if command -v node >/dev/null 2>&1; then
+    local node_major
+    node_major="$(node --version 2>/dev/null | sed 's/^v//' | cut -d. -f1)"
+    if [ "${node_major:-0}" -ge 18 ]; then
+      node_pkg=""
+      ok "Existing Node $(node --version) detected, keeping it"
+    fi
+  fi
+
+  # shellcheck disable=SC2086
+  pkg install -y openjdk-21 $node_pkg curl openssl-tool git >/dev/null || die "Failed to install the required runtime packages."
   ok "Java ready: $(java -version 2>&1 | head -1)"
   ok "Node ready: $(node --version) / npm $(npm --version)"
 
@@ -298,6 +323,35 @@ collect_install_plan() {
         warn "Enter a valid port between 1 and 65535."
       done
     fi
+  fi
+
+  collect_account_plan
+}
+
+collect_account_plan() {
+  KEEP_IDENTITY=0
+  CREATE_ACCOUNT=0
+  PANEL_HANDLE=""
+  PANEL_SECRET=""
+  PANEL_AUTH_SUMMARY="created on first panel launch"
+
+  section "Stage 4b · Panel account"
+  note "The panel is protected by a login. You can create the account now"
+  note "or on the first visit in the browser."
+
+  if [ -f "$UI_DIR/identity.json" ] && [ -n "$(json_get "$UI_DIR/identity.json" "secret.verifier" 2>/dev/null || true)" ]; then
+    if prompt_yes_no "Keep the existing panel account?" Y; then
+      KEEP_IDENTITY=1
+      PANEL_AUTH_SUMMARY="existing account kept ($(json_get "$UI_DIR/identity.json" "profile.handle" || printf 'unknown'))"
+      return
+    fi
+  fi
+
+  if prompt_yes_no "Create the panel account now?" Y; then
+    CREATE_ACCOUNT=1
+    PANEL_HANDLE="$(prompt_panel_handle)"
+    PANEL_SECRET="$(prompt_secret_pair "Panel passphrase (min 8 chars)" "Confirm passphrase")"
+    PANEL_AUTH_SUMMARY="account ready ($PANEL_HANDLE)"
   fi
 }
 
@@ -405,8 +459,18 @@ deploy_payload() {
     ok "Existing config kept"
   fi
 
-  rm -f "$UI_DIR/identity.json" "$UI_DIR/auth.json"
-  note "Panel auth is disabled in this build."
+  rm -f "$UI_DIR/auth.json"
+  if [ "$KEEP_IDENTITY" -eq 1 ]; then
+    ok "Existing panel account kept"
+  elif [ "$CREATE_ACCOUNT" -eq 1 ]; then
+    rm -f "$UI_DIR/identity.json" "$UI_DIR/sessions.json"
+    write_identity_record
+    verify_identity_record || die "Panel account verification failed."
+    ok "Panel account created for $PANEL_HANDLE"
+  else
+    rm -f "$UI_DIR/identity.json" "$UI_DIR/sessions.json"
+    note "Panel account will be created in the browser on first launch."
+  fi
 }
 
 accept_eula() {
@@ -496,7 +560,7 @@ print_summary() {
   section "Ready"
   echo -e "  ${D}Panel files${N}    $UI_DIR"
   echo -e "  ${D}Server files${N}   $SERVER_DIR"
-  echo -e "  ${D}Panel auth${N}     disabled in this build"
+  echo -e "  ${D}Panel auth${N}     $PANEL_AUTH_SUMMARY"
   echo -e "  ${D}HTTP port${N}      $http_port"
   if [ "$https_enabled" = "true" ]; then
     echo -e "  ${D}HTTPS port${N}     $https_port"

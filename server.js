@@ -30,10 +30,17 @@ const ACCESS_FILE = path.join(UI_DIR, 'identity.json');
 const INTEGRITY_FILE = path.join(UI_DIR, 'integrity.json');
 const BACKUP_DIR = path.join(UI_DIR, 'backups');
 const PANEL_SNAPSHOT_DIR = path.join(UI_DIR, 'panel-snapshots');
+const SESSIONS_FILE = path.join(UI_DIR, 'sessions.json');
 const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const LOG_HISTORY_LIMIT = 3000;
 const PANEL_SNAPSHOT_LIMIT = 18;
-const AUTH_FEATURE_ENABLED = false;
+// Set TC_NO_AUTH=1 to run the panel in open mode (no login). Only for
+// trusted, local-only setups.
+const AUTH_FEATURE_ENABLED = process.env.TC_NO_AUTH !== '1';
+const MIN_PASSPHRASE_LENGTH = 8;
+const LOGIN_MAX_FAILURES = 5;
+const LOGIN_LOCKOUT_MS = 5 * 60 * 1000;
+const LOGIN_GUARD_LIMIT = 500;
 const APP_VERSION = (() => {
   try {
     return require(path.join(__dirname, 'package.json')).version || '0.0.0';
@@ -126,7 +133,7 @@ const app = express();
 let CONFIG = loadConfig();
 let ACCESS = loadAccess();
 let INTEGRITY = loadIntegrity();
-let sessions = new Map();
+let sessions = AUTH_FEATURE_ENABLED ? loadSessions() : new Map();
 let mcProcess = null;
 let logHistory = [];
 let onlinePlayers = {};
@@ -238,8 +245,27 @@ function createSecretEnvelope(password) {
   };
 }
 
-function buildAccessRecord(handle = 'admin', password = 'changeme', bootstrap = true) {
-  const normalizedHandle = normalizeHandle(handle) || 'admin';
+function validateHandle(value) {
+  const handle = normalizeHandle(value);
+  if (!handle) {
+    throw new Error('Handle is required');
+  }
+  if (!/^[a-z0-9][a-z0-9._-]{1,31}$/.test(handle)) {
+    throw new Error('Handle must be 2-32 characters: letters, numbers, dots, dashes, underscores');
+  }
+  return handle;
+}
+
+function validatePassphrase(value) {
+  const passphrase = String(value || '');
+  if (passphrase.length < MIN_PASSPHRASE_LENGTH) {
+    throw new Error(`Passphrase must be at least ${MIN_PASSPHRASE_LENGTH} characters`);
+  }
+  return passphrase;
+}
+
+function buildAccessRecord(handle, password, bootstrap = false) {
+  const normalizedHandle = validateHandle(handle);
   const now = new Date().toISOString();
   return {
     version: 1,
@@ -255,6 +281,24 @@ function buildAccessRecord(handle = 'admin', password = 'changeme', bootstrap = 
     },
     updatedAt: now,
   };
+}
+
+function buildPendingAccessRecord() {
+  const now = new Date().toISOString();
+  return {
+    version: 1,
+    authRequired: true,
+    profile: null,
+    secret: null,
+    flags: {
+      needsSetup: true,
+    },
+    updatedAt: now,
+  };
+}
+
+function needsSetup() {
+  return AUTH_FEATURE_ENABLED && !!ACCESS.authRequired && !ACCESS.secret;
 }
 
 function buildOpenAccessRecord() {
@@ -429,9 +473,9 @@ function loadAccess() {
       updatedAt: current.updatedAt || new Date().toISOString(),
     };
   }
-  const bootstrap = buildAccessRecord();
-  writeJsonFile(ACCESS_FILE, bootstrap);
-  return bootstrap;
+  // No usable identity on disk: the panel stays locked until the first-run
+  // setup flow creates the account. Never write default credentials.
+  return buildPendingAccessRecord();
 }
 
 function saveAccess() {
@@ -459,22 +503,74 @@ function parseCookies(cookieHeader = '') {
   }, {});
 }
 
+// Session tokens are stored hashed so sessions.json never contains a value
+// that can be replayed directly as a cookie.
+function hashSessionToken(token) {
+  return crypto.createHash('sha256').update(String(token)).digest('hex');
+}
+
+function loadSessions() {
+  const stored = readJsonFile(SESSIONS_FILE, { sessions: {} });
+  const restored = new Map();
+  const now = Date.now();
+  Object.entries(stored.sessions || {}).forEach(([tokenHash, session]) => {
+    if (
+      session
+      && typeof tokenHash === 'string'
+      && /^[0-9a-f]{64}$/.test(tokenHash)
+      && Number(session.expiresAt) > now
+    ) {
+      restored.set(tokenHash, {
+        username: String(session.username || ''),
+        createdAt: Number(session.createdAt) || now,
+        expiresAt: Number(session.expiresAt),
+      });
+    }
+  });
+  return restored;
+}
+
+function persistSessions() {
+  if (!AUTH_FEATURE_ENABLED) {
+    return;
+  }
+  try {
+    writeJsonFile(SESSIONS_FILE, { sessions: Object.fromEntries(sessions) });
+  } catch (error) {
+    verbosePrint(`Could not persist sessions: ${error.message}`, 'warn');
+  }
+}
+
 function createSession(username) {
   const token = crypto.randomBytes(24).toString('hex');
-  sessions.set(token, {
+  sessions.set(hashSessionToken(token), {
     username,
+    createdAt: Date.now(),
     expiresAt: Date.now() + SESSION_TTL_MS,
   });
+  persistSessions();
   return token;
+}
+
+function revokeAllSessions() {
+  if (sessions.size) {
+    sessions.clear();
+    persistSessions();
+  }
 }
 
 function pruneSessions() {
   const now = Date.now();
+  let removed = false;
   sessions.forEach((value, key) => {
     if (!value || value.expiresAt <= now) {
       sessions.delete(key);
+      removed = true;
     }
   });
+  if (removed) {
+    persistSessions();
+  }
 }
 
 function getSessionFromRequest(req) {
@@ -483,28 +579,40 @@ function getSessionFromRequest(req) {
   if (!token) {
     return null;
   }
-  const session = sessions.get(token);
+  const tokenHash = hashSessionToken(token);
+  const session = sessions.get(tokenHash);
   if (!session || session.expiresAt <= Date.now()) {
-    sessions.delete(token);
+    if (sessions.delete(tokenHash)) {
+      persistSessions();
+    }
     return null;
   }
-  return { token, ...session };
+  return { token, tokenHash, ...session };
+}
+
+function sessionCookieFlags() {
+  const secure = hasHttpsConfig() ? '; Secure' : '';
+  return `Path=/; HttpOnly; SameSite=Strict${secure}`;
 }
 
 function setSessionCookie(res, token) {
   res.setHeader(
     'Set-Cookie',
-    `termucraft_session=${token}; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}; Path=/; HttpOnly; SameSite=Strict`,
+    `termucraft_session=${token}; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}; ${sessionCookieFlags()}`,
   );
 }
 
 function clearSessionCookie(res) {
-  res.setHeader('Set-Cookie', 'termucraft_session=; Max-Age=0; Path=/; HttpOnly; SameSite=Strict');
+  res.setHeader('Set-Cookie', `termucraft_session=; Max-Age=0; ${sessionCookieFlags()}`);
 }
 
 function requireAuth(req, res, next) {
   if (!ACCESS.authRequired) {
     next();
+    return;
+  }
+  if (needsSetup()) {
+    res.status(401).json({ error: 'Panel setup required', needsSetup: true });
     return;
   }
   const session = getSessionFromRequest(req);
@@ -516,22 +624,81 @@ function requireAuth(req, res, next) {
   next();
 }
 
-function verifyAccess(handle, password) {
+// Brute-force guard for the login endpoint, keyed by remote address.
+const loginGuard = new Map();
+
+function getClientKey(req) {
+  return String(req.socket?.remoteAddress || 'unknown');
+}
+
+function pruneLoginGuard() {
+  if (loginGuard.size <= LOGIN_GUARD_LIMIT) {
+    return;
+  }
+  const now = Date.now();
+  loginGuard.forEach((entry, key) => {
+    if (entry.lockedUntil <= now && now - entry.lastFailureAt > LOGIN_LOCKOUT_MS) {
+      loginGuard.delete(key);
+    }
+  });
+}
+
+function loginLockedSeconds(req) {
+  const entry = loginGuard.get(getClientKey(req));
+  if (!entry || entry.lockedUntil <= Date.now()) {
+    return 0;
+  }
+  return Math.ceil((entry.lockedUntil - Date.now()) / 1000);
+}
+
+function recordLoginFailure(req) {
+  pruneLoginGuard();
+  const key = getClientKey(req);
+  const entry = loginGuard.get(key) || { failures: 0, lockedUntil: 0, lastFailureAt: 0 };
+  const now = Date.now();
+  if (now - entry.lastFailureAt > LOGIN_LOCKOUT_MS) {
+    entry.failures = 0;
+  }
+  entry.failures += 1;
+  entry.lastFailureAt = now;
+  if (entry.failures >= LOGIN_MAX_FAILURES) {
+    entry.lockedUntil = now + LOGIN_LOCKOUT_MS;
+    entry.failures = 0;
+    addLog(`Login locked for ${key} after repeated failures`, 'warn');
+  }
+  loginGuard.set(key, entry);
+}
+
+function clearLoginFailures(req) {
+  loginGuard.delete(getClientKey(req));
+}
+
+function deriveSecretAsync(password, secret) {
+  return new Promise((resolve, reject) => {
+    crypto.pbkdf2(
+      String(password || ''),
+      Buffer.from(secret.salt, 'base64'),
+      secret.rounds,
+      secret.bytes,
+      secret.digest,
+      (error, derived) => (error ? reject(error) : resolve(derived)),
+    );
+  });
+}
+
+async function verifyAccess(handle, password) {
   if (!AUTH_FEATURE_ENABLED) {
     return true;
   }
   ACCESS = loadAccess();
+  if (!ACCESS.secret || !ACCESS.profile) {
+    return false;
+  }
   if (normalizeHandle(handle) !== ACCESS.profile.handle) {
     return false;
   }
   const stored = Buffer.from(ACCESS.secret.verifier, 'base64');
-  const derived = crypto.pbkdf2Sync(
-    String(password || ''),
-    Buffer.from(ACCESS.secret.salt, 'base64'),
-    ACCESS.secret.rounds,
-    ACCESS.secret.bytes,
-    ACCESS.secret.digest,
-  );
+  const derived = await deriveSecretAsync(password, ACCESS.secret);
   if (stored.length !== derived.length) {
     return false;
   }
@@ -2346,7 +2513,15 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(express.json({ limit: '700mb' }));
+// JAR uploads arrive as base64 JSON and need a large limit; every other
+// endpoint gets a small one so a single request cannot exhaust phone RAM.
+const smallJsonBody = express.json({ limit: '2mb' });
+const largeJsonBody = express.json({ limit: '700mb' });
+const LARGE_BODY_ROUTES = new Set(['/api/mods/upload', '/api/plugins/upload']);
+app.use((req, res, next) => {
+  const parser = LARGE_BODY_ROUTES.has(req.path) ? largeJsonBody : smallJsonBody;
+  parser(req, res, next);
+});
 
 app.use((error, req, res, next) => {
   if (!error) {
@@ -2361,27 +2536,94 @@ app.use((error, req, res, next) => {
 });
 
 app.get('/api/auth/status', (req, res) => {
+  if (!ACCESS.authRequired) {
+    res.json({
+      authenticated: true,
+      authRequired: false,
+      needsSetup: false,
+      username: ACCESS.profile?.handle || 'local',
+      handle: ACCESS.profile?.handle || 'local',
+      bootstrap: false,
+    });
+    return;
+  }
+  if (needsSetup()) {
+    res.json({ authenticated: false, authRequired: true, needsSetup: true, handle: null, username: null, bootstrap: false });
+    return;
+  }
   const session = getSessionFromRequest(req);
+  if (!session) {
+    // Never leak the account handle to unauthenticated visitors.
+    res.json({ authenticated: false, authRequired: true, needsSetup: false, handle: null, username: null, bootstrap: false });
+    return;
+  }
   res.json({
     authenticated: true,
+    authRequired: true,
+    needsSetup: false,
     username: ACCESS.profile.handle,
     handle: ACCESS.profile.handle,
-    authRequired: false,
-    bootstrap: false,
+    bootstrap: !!ACCESS.flags?.bootstrap,
   });
 });
 
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/setup', (req, res) => {
   if (!AUTH_FEATURE_ENABLED) {
-    res.json({ ok: true, disabled: true, username: ACCESS.profile.handle, handle: ACCESS.profile.handle, bootstrap: false });
+    res.json({ ok: true, disabled: true, handle: ACCESS.profile?.handle || 'local', username: ACCESS.profile?.handle || 'local' });
+    return;
+  }
+  ACCESS = loadAccess();
+  if (!needsSetup()) {
+    res.status(409).json({ error: 'Panel account already exists' });
+    return;
+  }
+  try {
+    const handle = validateHandle(req.body?.handle || req.body?.username);
+    const secret = validatePassphrase(req.body?.secret || req.body?.password);
+    const confirm = String(req.body?.confirm ?? secret);
+    if (secret !== confirm) {
+      throw new Error('Passphrases do not match');
+    }
+    ACCESS = buildAccessRecord(handle, secret, false);
+    saveAccess();
+    revokeAllSessions();
+    const token = createSession(ACCESS.profile.handle);
+    setSessionCookie(res, token);
+    addLog(`Panel account created for "${ACCESS.profile.handle}"`, 'system');
+    res.json({ ok: true, handle: ACCESS.profile.handle, username: ACCESS.profile.handle });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.post('/api/auth/login', async (req, res) => {
+  if (!AUTH_FEATURE_ENABLED) {
+    res.json({ ok: true, disabled: true, username: ACCESS.profile?.handle || 'local', handle: ACCESS.profile?.handle || 'local', bootstrap: false });
+    return;
+  }
+  if (needsSetup()) {
+    res.status(409).json({ error: 'Panel setup required', needsSetup: true });
+    return;
+  }
+  const lockedFor = loginLockedSeconds(req);
+  if (lockedFor > 0) {
+    res.status(429).json({ error: `Too many failed attempts. Try again in ${lockedFor}s.`, retryAfterSec: lockedFor });
     return;
   }
   const handle = String(req.body?.handle || req.body?.username || '').trim();
   const secret = String(req.body?.secret || req.body?.password || '');
-  if (!verifyAccess(handle, secret)) {
-    res.status(401).json({ error: 'Invalid username or password' });
+  let valid = false;
+  try {
+    valid = await verifyAccess(handle, secret);
+  } catch {
+    valid = false;
+  }
+  if (!valid) {
+    recordLoginFailure(req);
+    res.status(401).json({ error: 'Invalid handle or passphrase' });
     return;
   }
+  clearLoginFailures(req);
   const token = createSession(ACCESS.profile.handle);
   setSessionCookie(res, token);
   res.json({ ok: true, username: ACCESS.profile.handle, handle: ACCESS.profile.handle, bootstrap: !!ACCESS.flags?.bootstrap });
@@ -2394,36 +2636,36 @@ app.post('/api/auth/logout', (req, res) => {
   }
   const session = getSessionFromRequest(req);
   if (session) {
-    sessions.delete(session.token);
+    sessions.delete(session.tokenHash);
+    persistSessions();
   }
   clearSessionCookie(res);
   res.json({ ok: true });
 });
 
-app.post('/api/auth/change', requireAuth, (req, res) => {
+app.post('/api/auth/change', requireAuth, async (req, res) => {
   if (!AUTH_FEATURE_ENABLED) {
-    res.json({ ok: true, disabled: true, username: ACCESS.profile.handle, handle: ACCESS.profile.handle });
+    res.json({ ok: true, disabled: true, username: ACCESS.profile?.handle || 'local', handle: ACCESS.profile?.handle || 'local' });
     return;
   }
-  const currentSecret = String(req.body?.currentSecret || req.body?.currentPassword || '');
-  const handle = String(req.body?.handle || req.body?.username || '').trim();
-  const nextSecret = String(req.body?.nextSecret || req.body?.newPassword || '');
-  if (!verifyAccess(ACCESS.profile.handle, currentSecret)) {
-    res.status(400).json({ error: 'Current password is incorrect' });
-    return;
+  try {
+    const currentSecret = String(req.body?.currentSecret || req.body?.currentPassword || '');
+    const handle = validateHandle(req.body?.handle || req.body?.username);
+    const nextSecret = validatePassphrase(req.body?.nextSecret || req.body?.newPassword);
+    if (!(await verifyAccess(ACCESS.profile.handle, currentSecret))) {
+      res.status(400).json({ error: 'Current passphrase is incorrect' });
+      return;
+    }
+    setAccess(handle, nextSecret, false);
+    // Changing credentials invalidates every other session.
+    revokeAllSessions();
+    const token = createSession(ACCESS.profile.handle);
+    setSessionCookie(res, token);
+    addLog(`Panel credentials updated for "${ACCESS.profile.handle}"`, 'system');
+    res.json({ ok: true, username: ACCESS.profile.handle, handle: ACCESS.profile.handle });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
   }
-  if (!handle) {
-    res.status(400).json({ error: 'Username is required' });
-    return;
-  }
-  if (nextSecret.length < 4) {
-    res.status(400).json({ error: 'New password must be at least 4 characters' });
-    return;
-  }
-  setAccess(handle, nextSecret, false);
-  const token = createSession(ACCESS.profile.handle);
-  setSessionCookie(res, token);
-  res.json({ ok: true, username: ACCESS.profile.handle, handle: ACCESS.profile.handle });
 });
 
 app.get('/api/health', (req, res) => {

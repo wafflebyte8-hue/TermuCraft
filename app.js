@@ -23,7 +23,7 @@ const state = {
   integrity: {},
 };
 
-const AUTH_DISABLED = true;
+state.auth = { authRequired: true, needsSetup: false, authenticated: false, handle: '' };
 
 async function api(path, options = {}) {
   const init = { ...options, headers: { ...(options.headers || {}) } };
@@ -41,7 +41,7 @@ async function api(path, options = {}) {
   }
 
   if (response.status === 401) {
-    showLogin(true, 'Authentication required');
+    showLogin(true, data.needsSetup ? '' : 'Authentication required', data.needsSetup ? 'setup' : 'login');
     throw new Error(data.error || 'Authentication required');
   }
   if (!response.ok || data.error) {
@@ -111,83 +111,119 @@ function disableAuthUI() {
   $('authUser').textContent = 'local';
 }
 
-function showLogin(show, note = '') {
-  if (AUTH_DISABLED) {
+function setLoginMode(mode) {
+  state.loginMode = mode;
+  const setup = mode === 'setup';
+  if ($('loginTitle')) $('loginTitle').textContent = setup ? 'Create Panel Account' : 'Unlock The Deck';
+  if ($('loginSubtitle')) {
+    $('loginSubtitle').textContent = setup
+      ? 'First launch: choose the handle and passphrase that will guard this panel.'
+      : 'Use your panel account to open the control deck.';
+  }
+  if ($('loginSubmitBtn')) $('loginSubmitBtn').textContent = setup ? 'Create Account' : 'Login';
+  if ($('loginConfirmWrap')) $('loginConfirmWrap').toggleAttribute('hidden', !setup);
+  if ($('loginConfirm')) $('loginConfirm').toggleAttribute('required', setup);
+  if ($('loginPassword')) $('loginPassword').setAttribute('autocomplete', setup ? 'new-password' : 'current-password');
+}
+
+function shakeLoginCard() {
+  const card = $('loginForm');
+  card.classList.remove('shake');
+  void card.offsetWidth;
+  card.classList.add('shake');
+  setTimeout(() => card.classList.remove('shake'), 500);
+}
+
+function setAuthUser(handle) {
+  state.auth.handle = handle || '';
+  $('authUser').textContent = handle || 'guest';
+  if ($('authUsername')) $('authUsername').value = handle || '';
+}
+
+function showLogin(show, note = '', mode = null) {
+  if (!state.auth.authRequired) {
     disableAuthUI();
     showShell(true);
     return;
   }
+  if (mode) setLoginMode(mode);
+  $('loginGate').removeAttribute('hidden');
   $('loginGate').classList.toggle('visible', show);
   $('loginNote').textContent = note;
   showShell(!show);
-  if (show) {
-    if (state.ws) {
-      state.ws.close();
-      state.ws = null;
-    }
+  if (show && state.ws) {
+    state.ws.close();
+    state.ws = null;
   }
 }
 
 async function checkAuth() {
-  if (AUTH_DISABLED) {
+  let status = {};
+  try {
+    status = await fetch('/api/auth/status').then((res) => res.json());
+  } catch {
+    status = {};
+  }
+  state.auth = {
+    authRequired: status.authRequired !== false,
+    needsSetup: !!status.needsSetup,
+    authenticated: !!status.authenticated,
+    handle: status.handle || status.username || '',
+  };
+  if (!state.auth.authRequired) {
     disableAuthUI();
-    showLogin(false);
+    showShell(true);
     return true;
   }
-  const status = await fetch('/api/auth/status').then((res) => res.json());
-  const handle = status.handle || status.username || '';
-  $('authUser').textContent = handle || 'guest';
-  $('authUsername').value = handle;
-  if (status.authenticated) {
+  $('logoutBtn')?.removeAttribute('hidden');
+  if (state.auth.authenticated) {
+    setAuthUser(state.auth.handle);
     showLogin(false);
     if (status.bootstrap) {
       toast('Bootstrap credentials are still active. Change them in Settings.', 'info');
     }
     return true;
   }
-  showLogin(true);
+  showLogin(true, '', state.auth.needsSetup ? 'setup' : 'login');
   return false;
 }
 
 async function login(event) {
-  if (AUTH_DISABLED) {
-    event.preventDefault();
-    showLogin(false);
-    return;
-  }
   event.preventDefault();
   const handle = normalizeHandle($('loginUsername').value);
   const secret = $('loginPassword').value;
   try {
-    const result = await api('/api/auth/login', { method: 'POST', body: { handle, secret } });
-    const resolvedHandle = result.handle || result.username;
-    $('authUser').textContent = resolvedHandle;
-    $('authUsername').value = resolvedHandle;
+    let result;
+    if (state.loginMode === 'setup') {
+      const confirm = $('loginConfirm').value;
+      if (secret.length < 8) throw new Error('Passphrase must be at least 8 characters');
+      if (secret !== confirm) throw new Error('Passphrases do not match');
+      result = await api('/api/auth/setup', { method: 'POST', body: { handle, secret, confirm } });
+    } else {
+      result = await api('/api/auth/login', { method: 'POST', body: { handle, secret } });
+    }
+    state.auth.authenticated = true;
+    state.auth.needsSetup = false;
+    setAuthUser(result.handle || result.username);
     $('loginPassword').value = '';
+    if ($('loginConfirm')) $('loginConfirm').value = '';
     showLogin(false);
     await bootstrap();
   } catch (error) {
     $('loginNote').textContent = error.message;
-    const card = $('loginForm');
-    card.classList.remove('shake');
-    void card.offsetWidth;
-    card.classList.add('shake');
-    setTimeout(() => card.classList.remove('shake'), 500);
+    shakeLoginCard();
   }
 }
 
 async function logout() {
-  if (AUTH_DISABLED) {
-    toast('Auth is disabled in this build.', 'info');
-    return;
-  }
   try {
     await api('/api/auth/logout', { method: 'POST' });
   } catch {
     // Ignore logout failures.
   }
+  state.auth.authenticated = false;
   $('authUser').textContent = 'guest';
-  showLogin(true, 'Logged out');
+  showLogin(true, 'Logged out', 'login');
 }
 
 function connectSocket() {
@@ -200,7 +236,9 @@ function connectSocket() {
     state.ws = null;
     setWsStatus(false);
     if (event.code === 4001) {
-      showLogin(true, 'Session expired');
+      checkAuth().then((authenticated) => {
+        if (!authenticated) showLogin(true, 'Session expired');
+      });
       return;
     }
     clearTimeout(state.reconnectTimer);
@@ -288,13 +326,11 @@ function applyStatus(status) {
 function applyConfig(config) {
   if (!config) return;
   state.config = { ...state.config, ...config };
-  const authUserNode = $('authUser');
-  const authUserLabel = authUserNode?.textContent || 'guest';
   if ($('sRam')) $('sRam').value = state.config.memory || '';
   if ($('sJar')) $('sJar').value = state.config.serverJar || '';
   if ($('sDir')) $('sDir').value = state.config.serverDir || '';
   if ($('sJava')) $('sJava').value = state.config.javaPath || '';
-  if ($('authUsername')) $('authUsername').value = authUserLabel === 'guest' ? (state.config.authUsername || '') : authUserLabel;
+  if ($('authUsername') && !$('authUsername').value) $('authUsername').value = state.auth.handle || '';
   if ($('autoRestart')) $('autoRestart').checked = !!state.config.autoRestart;
   if ($('autoRestartDelay')) $('autoRestartDelay').value = state.config.autoRestartDelaySec ?? 10;
   if ($('backupRetention')) $('backupRetention').value = state.config.backupRetention ?? 5;
@@ -763,21 +799,19 @@ async function deletePanelSnapshot(id) {
 }
 
 async function saveAuth() {
-  if (AUTH_DISABLED) {
-    toast('Panel auth is disabled for now.', 'info');
-    return;
-  }
   const handle = normalizeHandle($('authUsername').value);
   const currentSecret = $('authCurrentPassword').value;
   const nextSecret = $('authNewPassword').value;
+  if (!handle) throw new Error('Handle is required');
+  if (nextSecret.length < 8) throw new Error('New passphrase must be at least 8 characters');
   const result = await api('/api/auth/change', {
     method: 'POST',
     body: { handle, currentSecret, nextSecret },
   });
-  $('authUser').textContent = result.handle || result.username;
+  setAuthUser(result.handle || result.username);
   $('authCurrentPassword').value = '';
   $('authNewPassword').value = '';
-  toast('Identity updated', 'ok');
+  toast('Panel access updated. Other sessions were signed out.', 'ok');
   showBtnSuccess($('saveAuthBtn'));
 }
 
@@ -1351,7 +1385,6 @@ function syncInterfaceCopy() {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
-  disableAuthUI();
   bindEvents();
   syncInterfaceCopy();
   initTabIndicator();

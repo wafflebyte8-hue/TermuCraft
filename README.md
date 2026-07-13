@@ -10,7 +10,7 @@
 
 TermuCraft is a web-based Minecraft server panel built for running and managing servers directly from Android through Termux. The goal is to make mobile hosting practical, manageable, and less annoying than doing everything by hand.
 
-Current build: `v0.6.0`
+Current build: `v0.7.0`
 
 ## Install
 
@@ -24,11 +24,13 @@ chmod +x setup.sh
 ./setup.sh
 ```
 
-The installer currently sets up the panel in open mode.
+TermuCraft runs on Node.js 18 or newer (including current Node 24). The installer keeps an existing Termux Node install and only adds `nodejs-lts` when none is present.
 
-- Panel auth is disabled in this build
-- The panel opens directly after startup
-- Auth can come back later once it is rebuilt properly
+The installer walks you through the panel account:
+
+- Create the account during install, or skip and create it in the browser on first launch
+- Existing accounts are kept when you update
+- Passphrases are stored as PBKDF2-SHA512 verifiers, never in plain text
 
 ## Start
 
@@ -63,7 +65,9 @@ Instead of relying on scattered shell commands, manual file edits, and constant 
 
 ## Core Features
 
-- Browser-based control panel
+- Browser-based control panel behind a proper login
+- First-run account setup, in the installer or in the browser
+- Login rate limiting and persistent, hashed-at-rest sessions
 - Start, stop, restart, and force-kill controls
 - Live console output
 - Server status and uptime tracking
@@ -74,9 +78,19 @@ Instead of relying on scattered shell commands, manual file edits, and constant 
 - Panel snapshot export, import, and restore
 - Crash logging and auto-restart behavior
 - Termux-first setup and hosting workflow
-- Open-mode local panel access for now
 - Hardening response headers on all panel responses
 - Unauthenticated `/api/health` endpoint for uptime checks
+
+## Panel Access
+
+The panel requires a login.
+
+- On a fresh install the panel shows a one-time account creation screen (or the installer creates the account for you)
+- Sessions survive panel restarts; tokens are stored hashed in `~/TermuCraft/sessions.json`
+- Repeated failed logins lock the source address out for 5 minutes
+- Changing the handle or passphrase signs out every other session
+- Forgot the passphrase? Stop the panel, delete `~/TermuCraft/identity.json`, and restart — the panel returns to the first-run setup screen
+- For trusted local-only use you can start the panel with `TC_NO_AUTH=1` to disable the login entirely
 
 ## Planned Server Management Scope
 
@@ -129,7 +143,6 @@ The project is expected to stay lightweight and straightforward:
 - This project is separate from DroidMC and not just a rename
 - The current focus is the free/base experience first
 - The goal is to ship something solid before adding extra complexity
-- Authentication is temporarily removed from the current build while the access system is being rebuilt
 
 ## Repository Setup
 

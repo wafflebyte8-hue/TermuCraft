@@ -14,15 +14,19 @@
           <img src="Logo.png" alt="TermuCraft logo" class="login-logo" />
           <div>
             <div class="login-kicker">TermuCraft Access</div>
-            <h1>Unlock The Deck</h1>
-            <p>Use the panel account created during setup to open the control deck.</p>
+            <h1 id="loginTitle">Unlock The Deck</h1>
+            <p id="loginSubtitle">Use your panel account to open the control deck.</p>
           </div>
         </div>
         <label class="login-label" for="loginUsername">Handle</label>
         <input class="inp" id="loginUsername" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false" required />
         <label class="login-label" for="loginPassword">Passphrase</label>
         <input class="inp" id="loginPassword" type="password" autocomplete="current-password" required />
-        <button class="abtn primary login-btn" type="submit">Login</button>
+        <div id="loginConfirmWrap" hidden>
+          <label class="login-label" for="loginConfirm">Confirm Passphrase</label>
+          <input class="inp" id="loginConfirm" type="password" autocomplete="new-password" />
+        </div>
+        <button class="abtn primary login-btn" type="submit" id="loginSubmitBtn">Login</button>
         <div class="login-note" id="loginNote"></div>
       </form>
     </div>
@@ -158,7 +162,7 @@
             </div>
 
             <div class="stack-grid">
-              <div class="panel" id="authPanel" hidden>
+              <div class="panel" id="runtimePanel">
                 <div class="panel-title">Runtime State</div>
                 <div class="health-box">
                   <div class="health-row"><span class="health-key">Crash state</span><span class="health-val" id="healthCrash">No crash recorded</span></div>
@@ -652,6 +656,36 @@
               </div>
               <div class="settings-actions">
                 <button class="abtn ghost" id="updateDuckDnsBtn">Update Now</button>
+              </div>
+            </div>
+
+            <div class="panel" id="authPanel">
+              <div class="panel-title">Panel Access</div>
+              <div class="cfg-grid compact-grid">
+                <div class="cfg-row">
+                  <div class="cfg-lbl">
+                    <div class="cfg-name">Handle</div>
+                    <div class="cfg-desc">The account name used to unlock the panel</div>
+                  </div>
+                  <input class="cfg-inp" id="authUsername" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false" />
+                </div>
+                <div class="cfg-row">
+                  <div class="cfg-lbl">
+                    <div class="cfg-name">Current Passphrase</div>
+                    <div class="cfg-desc">Required to confirm any access change</div>
+                  </div>
+                  <input class="cfg-inp" id="authCurrentPassword" type="password" autocomplete="current-password" />
+                </div>
+                <div class="cfg-row">
+                  <div class="cfg-lbl">
+                    <div class="cfg-name">New Passphrase</div>
+                    <div class="cfg-desc">Minimum 8 characters. Other sessions are signed out.</div>
+                  </div>
+                  <input class="cfg-inp" id="authNewPassword" type="password" autocomplete="new-password" />
+                </div>
+              </div>
+              <div class="settings-actions">
+                <button class="abtn primary" id="saveAuthBtn">Update Access</button>
               </div>
             </div>
           </div>
