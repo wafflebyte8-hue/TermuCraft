@@ -375,6 +375,11 @@ function applyNetwork(network) {
   if ($('ciPort')) $('ciPort').textContent = state.network.mcPort || '25565';
   if ($('panelLAN')) $('panelLAN').textContent = `${protocol}://${state.network.lanIp || location.hostname}:${port}`;
   if ($('aLAN')) $('aLAN').textContent = `${state.network.lanIp || location.hostname}:${state.network.mcPort || '25565'}`;
+  const bedrockText = state.network.crossplayInstalled
+    ? `${state.network.lanIp || location.hostname}:${state.network.bedrockPort || 19132} (UDP)`
+    : 'Not installed (see Builds tab)';
+  if ($('ciBedrock')) $('ciBedrock').textContent = bedrockText;
+  if ($('bedrockLAN')) $('bedrockLAN').textContent = bedrockText;
   if ($('panelPublic')) $('panelPublic').textContent = state.network.publicPanelUrl || 'Not configured';
   if ($('duckDnsHost')) $('duckDnsHost').textContent = state.network.duckDnsHost || 'Not configured';
   if ($('duckDnsState')) {

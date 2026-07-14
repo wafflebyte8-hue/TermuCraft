@@ -1424,6 +1424,8 @@ function getNetworkInfo() {
     panelProtocol: hasHttpsConfig() ? "https" : "http",
     duckDnsEnabled: hasDuckDnsConfig(),
     duckDnsHost: getDuckDnsHost(),
+    crossplayInstalled: hasGeyserInstalled() && hasFloodgateInstalled(),
+    bedrockPort: hasGeyserInstalled() ? getBedrockPort() : null,
     publicPanelUrl: getPublicPanelUrl(),
     duckDnsStatus: duckDnsState.lastError
       ? `error: ${duckDnsState.lastError}`
@@ -2370,6 +2372,9 @@ function attachMcProcess(processHandle) {
     startTime = null;
     expectedExit = false;
     restartRequested = false;
+    // Geyser writes its config during its first run - fix auth-type as soon
+    // as the server stops so the next start has working crossplay.
+    tuneGeyserConfig();
     updateSystemStats();
     broadcast({ type: "status", ...buildStatusPayload() });
 
@@ -2445,6 +2450,8 @@ function startServer(reason = "manual") {
   if (reason !== "crash recovery") {
     rapidCrashCount = 0;
   }
+  // Keep Geyser usable with Floodgate before every launch.
+  tuneGeyserConfig();
   const eulaPath = path.join(CONFIG.serverDir, "eula.txt");
   if (!fs.existsSync(eulaPath)) {
     fs.writeFileSync(eulaPath, "eula=true\n");
@@ -2727,6 +2734,69 @@ function supportsPluginCrossplay(type) {
   return ["paper", "purpur"].includes(String(type || "").toLowerCase());
 }
 
+function getGeyserConfigPath() {
+  return path.join(CONFIG.serverDir, "plugins", "Geyser-Spigot", "config.yml");
+}
+
+function hasGeyserInstalled() {
+  return fs.existsSync(
+    path.join(CONFIG.serverDir, "plugins", "Geyser-Spigot.jar"),
+  );
+}
+
+function hasFloodgateInstalled() {
+  return fs.existsSync(
+    path.join(CONFIG.serverDir, "plugins", "floodgate-spigot.jar"),
+  );
+}
+
+// Geyser generates its config with auth-type: online, which rejects Bedrock
+// players unless they sign in with a Java account. With Floodgate installed
+// it must be `floodgate` - the #1 reason "crossplay doesn't work". The panel
+// patches this whenever the config exists (after Geyser's first run).
+function tuneGeyserConfig() {
+  const configPath = getGeyserConfigPath();
+  if (!hasFloodgateInstalled() || !fs.existsSync(configPath)) {
+    return false;
+  }
+  try {
+    const raw = fs.readFileSync(configPath, "utf8");
+    const patched = raw.replace(
+      /^(\s*auth-type:\s*)(\S+)(\s*)$/m,
+      (line, prefix, value, trailing) =>
+        value.toLowerCase() === "floodgate"
+          ? line
+          : `${prefix}floodgate${trailing}`,
+    );
+    if (patched !== raw) {
+      fs.writeFileSync(configPath, patched);
+      addLog(
+        "--- Geyser auth-type set to floodgate: Bedrock players can now join without a Java account ---",
+        "system",
+      );
+      return true;
+    }
+  } catch (error) {
+    addLog(`Could not tune Geyser config: ${error.message}`, "warn");
+  }
+  return false;
+}
+
+function getBedrockPort() {
+  try {
+    const raw = fs.readFileSync(getGeyserConfigPath(), "utf8");
+    const bedrockSection = String(raw).split(/^bedrock:\s*$/m)[1];
+    const match =
+      bedrockSection && bedrockSection.match(/^\s+port:\s*(\d+)\s*$/m);
+    if (match) {
+      return Number(match[1]);
+    }
+  } catch {
+    // Fall through to the Geyser default.
+  }
+  return 19132;
+}
+
 async function installCrossplayPlugins() {
   if (!supportsPluginCrossplay(CONFIG.serverType)) {
     throw new Error(
@@ -2775,6 +2845,16 @@ async function installCrossplayPlugins() {
   downloadState.name = "Crossplay plugins ready";
   broadcast({ type: "download", ...downloadState });
   addLog("--- Crossplay plugins installed: Geyser + Floodgate ---", "system");
+  if (!tuneGeyserConfig()) {
+    addLog(
+      "--- Restart the server so Geyser loads. The panel switches Geyser to Floodgate auth automatically once its config exists. ---",
+      "system",
+    );
+  }
+  addLog(
+    `--- Bedrock players join at ${getNetworkInfo().lanIp}:${getBedrockPort()} (UDP). Java players keep using port ${getServerPort()}. ---`,
+    "system",
+  );
 }
 
 async function performServerDownload(type, version) {
