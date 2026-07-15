@@ -10,7 +10,7 @@
 
 TermuCraft is a web-based Minecraft server panel built for running and managing servers directly from Android through Termux. The goal is to make mobile hosting practical, manageable, and less annoying than doing everything by hand.
 
-Current build: `v0.8.0`
+Current build: `v0.8.1`
 
 ## Install
 
@@ -80,6 +80,7 @@ Instead of relying on scattered shell commands, manual file edits, and constant 
 - Root power-ups: on rooted phones the panel can force CPU performance mode, raise the Java process priority, and shield the server from Android's low-memory killer (Settings → Root Boost)
 - One-click version support: installs ViaVersion + ViaBackwards + ViaRewind so Java players on older and newer game versions can join (Builds tab)
 - Automatic plugin updates: a daily check keeps Geyser/Floodgate and the Via plugins current — which is what keeps new Bedrock versions working — downloading only when a new build actually exists
+- Test mode: if the panel server is unreachable, the UI opens as a browsable demo with sample data instead of a dead login screen — actions are disabled and it reconnects automatically when the server comes back
 - Automatic server updates: a daily check keeps the server jar itself current. "Builds only" (default) applies safe fixes for your current version; "Latest game version" also upgrades to new Minecraft releases after taking a full backup. A running server is never touched — pending updates install when it stops or falls asleep
 - Server status and uptime tracking
 - Server property editing

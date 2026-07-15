@@ -28,8 +28,11 @@ const state = {
 };
 
 state.auth = { authRequired: true, needsSetup: false, authenticated: false, handle: '' };
+state.testMode = false;
+state.serverUnreachable = false;
 
 async function api(path, options = {}) {
+  if (state.testMode) return demoApi(path, options);
   const init = { ...options, headers: { ...(options.headers || {}) } };
   if (init.body && typeof init.body !== 'string') {
     init.headers['Content-Type'] = 'application/json';
@@ -165,7 +168,11 @@ async function checkAuth() {
   let status = {};
   try {
     status = await fetch('/api/auth/status').then((res) => res.json());
+    state.serverUnreachable = false;
   } catch {
+    // fetch only rejects when the request never got an answer (server dead,
+    // file:// open, network gone) - that is what test mode is for.
+    state.serverUnreachable = true;
     status = {};
   }
   state.auth = {
@@ -231,6 +238,7 @@ async function logout() {
 }
 
 function connectSocket() {
+  if (state.testMode) return;
   if (state.ws) return;
   const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
   state.ws = new WebSocket(`${protocol}://${location.host}`);
@@ -260,6 +268,7 @@ function connectSocket() {
 // Console lifeline: when the WebSocket is down (flaky mobile browsers,
 // battery savers), poll the REST endpoint so logs and stats keep flowing.
 function startConsolePolling() {
+  if (state.testMode) return;
   if (state.pollTimer) return;
   state.pollTimer = setInterval(async () => {
     if (state.ws && state.ws.readyState === 1) return;
@@ -1290,6 +1299,17 @@ function bindEvents() {
       toast(error.message, 'err');
     }
   });
+  $('testRetryBtn')?.addEventListener('click', () => location.reload());
+  const railToggle = (open) => {
+    const shell = $('appShell');
+    if (!shell) return;
+    const next = open === undefined ? !shell.classList.contains('rail-open') : open;
+    shell.classList.toggle('rail-open', next);
+    $('menuBtn')?.setAttribute('aria-label', next ? 'Close menu' : 'Open menu');
+  };
+  $('menuBtn')?.addEventListener('click', () => railToggle());
+  $('railScrim')?.addEventListener('click', () => railToggle(false));
+  document.querySelectorAll('.tnav').forEach((node) => node.addEventListener('click', () => railToggle(false)));
   $('downloadLogBtn')?.addEventListener('click', () => {
     const text = state.logs.map((entry) => `[${entry.time}] [${entry.type}] ${entry.text}`).join('\n');
     const link = document.createElement('a');
@@ -1590,6 +1610,193 @@ function syncInterfaceCopy() {
   if (jump) jump.textContent = 'Jump to latest';
 }
 
+// ── Test mode ────────────────────────────────────────────────────
+// When the panel server is unreachable at load (dead backend, cached page,
+// or index.html opened straight from disk) the UI switches to a browsable
+// demo: sample data everywhere, actions disabled, auto-retry in background.
+
+const DEMO = {
+  config: {
+    serverJar: 'server.jar', serverDir: '/data/data/com.termux/files/home/termucraft-server',
+    memory: '2G', javaPath: 'java', uiPort: 8080, httpsEnabled: false,
+    serverType: 'paper', serverVersion: '26.2', preset: 'balanced',
+    autoRestart: true, autoRestartDelaySec: 10, backupRetention: 5,
+    scheduleBackupMinutes: 0, scheduleBroadcastMinutes: 0, scheduleBroadcastMessage: '', scheduleRestartTime: '',
+    motd: 'A TermuCraft Minecraft Server', duckDnsEnabled: false, duckDnsDomain: '', duckDnsIntervalMinutes: 10,
+    duckDnsTokenConfigured: false, lastDownloadedChecksum: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    lastDownloadedChecksumType: 'sha256', requiredJavaMajor: 25,
+    idleStopMinutes: 60, optimizedFlags: true, rootBoost: true,
+    autoUpdatePlugins: true, autoUpdateServer: true, autoUpdateServerChannel: 'build',
+  },
+  network: {
+    lanIp: '192.168.1.42', addresses: ['192.168.1.42'], mcPort: '25565', panelPort: '8080', panelProtocol: 'http',
+    crossplayInstalled: true, bedrockPort: 19132, versionSupportInstalled: true,
+    duckDnsEnabled: false, duckDnsHost: '', publicPanelUrl: '', duckDnsStatus: 'disabled',
+  },
+  players: [
+    { name: 'Steve', joined: Date.now() - 47 * 60 * 1000 },
+    { name: '.AlexBedrock', joined: Date.now() - 12 * 60 * 1000 },
+  ],
+  logs: [
+    '--- Starting server.jar (2G RAM, manual) ---',
+    '--- Optimized JVM flags enabled ---',
+    'Starting minecraft server version 26.2',
+    'Preparing level "world"',
+    'Done (11.2s)! For help, type "help"',
+    '[Geyser] Started Geyser on 0.0.0.0:19132',
+    '[floodgate] Floodgate ready for Bedrock players',
+    '[ViaVersion] Finished mapping loading',
+    'Steve joined the game',
+    '.AlexBedrock joined the game',
+    '[root] CPU governor set to performance: done',
+    '--- Sleep mode ready: empty server stops after 60 min ---',
+  ].map((text, i) => ({ seq: i + 1, text, type: text.startsWith('---') || text.startsWith('[root]') ? 'system' : 'log', time: '12:0' + Math.min(9, i) + ':00' })),
+  backups: [
+    { id: '2026-07-14T22-10-05Z', label: 'pre-update 1.21.4 to 26.2', createdAt: '2026-07-14 22:10', size: 52428800 },
+    { id: '2026-07-13T03-00-00Z', label: 'scheduled backup', createdAt: '2026-07-13 03:00', size: 49807360 },
+    { id: '2026-07-11T18-44-12Z', label: 'manual backup', createdAt: '2026-07-11 18:44', size: 47316992 },
+  ],
+  plugins: [
+    { name: 'Geyser-Spigot.jar', size: 19208630 },
+    { name: 'floodgate-spigot.jar', size: 11560907 },
+    { name: 'ViaVersion.jar', size: 6329567 },
+    { name: 'ViaBackwards.jar', size: 1378644 },
+    { name: 'ViaRewind.jar', size: 389535 },
+  ],
+  properties: {
+    'max-players': '20', gamemode: 'survival', difficulty: 'easy', 'level-name': 'world', 'level-seed': '',
+    'server-port': '25565', 'online-mode': 'true', 'white-list': 'false', 'view-distance': '8',
+    'simulation-distance': '6', pvp: 'true', 'spawn-monsters': 'true', 'spawn-animals': 'true',
+    'spawn-npcs': 'true', 'allow-nether': 'true', 'allow-flight': 'true', 'generate-structures': 'true',
+    'spawn-protection': '0', 'enable-command-block': 'false', 'force-gamemode': 'false', hardcore: 'false',
+    'require-resource-pack': 'false', 'resource-pack': '', 'resource-pack-prompt': '',
+    'sync-chunk-writes': 'false', motd: 'A TermuCraft Minecraft Server',
+  },
+  validation: {
+    javaVersion: 'openjdk 25 2025-09-16', nodeVersion: 'v24.1.0',
+    checks: [
+      { label: 'Server JAR present', ok: true, detail: 'server.jar (61.7 MB)' },
+      { label: 'Java fits server version', ok: true, detail: 'needs 25, found 25' },
+      { label: 'EULA accepted', ok: true, detail: 'eula=true' },
+      { label: 'Free storage', ok: true, detail: '18.8 GB available' },
+    ],
+  },
+};
+
+function demoStatus() {
+  return {
+    running: true,
+    uptime: demoUptime(),
+    sleep: { enabled: true, idleStopMinutes: 60, sleeping: false, waking: false, since: null, stopsInMs: null },
+    players: DEMO.players,
+    network: DEMO.network,
+    config: DEMO.config,
+    jarExists: true,
+    download: null,
+    pendingRestart: null,
+    lastCrash: null,
+    backupCount: DEMO.backups.length,
+    rootAvailable: true,
+  };
+}
+
+let demoSeconds = 2 * 3600 + 41 * 60;
+function demoUptime() {
+  const s = demoSeconds;
+  return `${String(Math.floor(s / 3600)).padStart(2, '0')}:${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+}
+
+async function demoApi(path, options = {}) {
+  const method = String(options.method || 'GET').toUpperCase();
+  if (method !== 'GET') {
+    throw new Error('Test mode — the panel server is unreachable, actions are disabled');
+  }
+  if (path.startsWith('/api/auth/status')) return { authRequired: false };
+  if (path.startsWith('/api/status')) return demoStatus();
+  if (path.startsWith('/api/validation')) return DEMO.validation;
+  if (path.startsWith('/api/integrity')) return { records: [] };
+  if (path.startsWith('/api/backups')) return { backups: DEMO.backups };
+  if (path.startsWith('/api/panel/snapshots')) return { snapshots: [] };
+  if (path.startsWith('/api/files/read')) {
+    return {
+      key: 'server.properties', label: 'server.properties', editable: false, exists: true,
+      content: Object.entries(DEMO.properties).map(([k, v]) => `${k}=${v}`).join('\n'),
+    };
+  }
+  if (path.startsWith('/api/files')) {
+    return {
+      files: [{ key: 'server.properties', label: 'server.properties', editable: true, exists: true, size: 1284 }],
+      directories: {
+        plugins: DEMO.plugins, mods: [], datapacks: [],
+        logs: [{ name: 'latest.log', size: 48211 }],
+      },
+    };
+  }
+  if (path.startsWith('/api/admin/ops')) return { entries: [{ name: 'Steve', uuid: 'demo' }] };
+  if (path.startsWith('/api/admin/')) return { entries: [] };
+  if (path.startsWith('/api/mods')) return { mods: [] };
+  if (path.startsWith('/api/plugins')) return { plugins: DEMO.plugins };
+  if (path.startsWith('/api/versions/')) return { versions: ['26.2', '26.1', '1.21.11', '1.21.8', '1.21.4', '1.21.1'] };
+  if (path.startsWith('/api/properties')) return { ...DEMO.properties };
+  if (path.startsWith('/api/presets')) return { presets: {} };
+  return {};
+}
+
+function enterTestMode() {
+  if (state.testMode) return;
+  state.testMode = true;
+  state.auth = { authRequired: false, needsSetup: false, authenticated: false, handle: 'demo' };
+  disableAuthUI();
+  $('loginGate')?.classList.remove('visible');
+  showShell(true);
+  $('testBanner')?.removeAttribute('hidden');
+  setTimeout(() => $('testBanner')?.setAttribute('hidden', ''), 5000);
+  if ($('authUser')) $('authUser').textContent = 'test mode';
+  state.logs = DEMO.logs.slice();
+  state.lastSeq = state.logs.length;
+  state.stats = { cpu: 142, cpuCores: 8, ram: 1480, diskUsed: 6.2e9, diskTotal: 25e9 };
+  renderLogs();
+  bootstrap().catch(() => {});
+  startDemoTicker();
+  startReachabilityProbe();
+}
+
+function startDemoTicker() {
+  let tick = 0;
+  const extraLines = [
+    '[Server] Autosave complete',
+    'Steve moved too quickly!',
+    '[Geyser] .AlexBedrock pinged the server',
+    '[Server] Can\'t keep up! Did the system time change?',
+  ];
+  setInterval(() => {
+    tick += 1;
+    demoSeconds += 1;
+    const wave = 130 + 60 * Math.sin(tick / 8) + Math.random() * 24;
+    state.stats.cpu = Math.round(Math.max(4, wave) * 10) / 10;
+    state.stats.ram = Math.round(1400 + 90 * Math.sin(tick / 23) + Math.random() * 30);
+    updateStats();
+    updateUptime(demoUptime());
+    if (tick % 7 === 0) {
+      const text = extraLines[(tick / 7) % extraLines.length | 0];
+      state.lastSeq += 1;
+      const entry = { seq: state.lastSeq, text, type: 'log', time: new Date().toLocaleTimeString('en-US', { hour12: false }) };
+      state.logs.push(entry);
+      appendLog(entry);
+    }
+  }, 1000);
+}
+
+function startReachabilityProbe() {
+  setInterval(() => {
+    fetch('/api/health', { cache: 'no-store' })
+      .then((response) => {
+        if (response.ok) location.reload();
+      })
+      .catch(() => {});
+  }, 10000);
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
   bindEvents();
   syncInterfaceCopy();
@@ -1599,6 +1806,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   renderMiniBackups();
   window.addEventListener('resize', initTabIndicator);
   const authenticated = await checkAuth();
+  if (state.serverUnreachable) {
+    enterTestMode();
+    return;
+  }
   if (authenticated) {
     bootstrap().catch((error) => toast(error.message, 'err'));
   }

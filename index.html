@@ -9,6 +9,10 @@
   </head>
   <body>
     <div class="aurora" aria-hidden="true"><i></i><i></i><i></i></div>
+    <div class="test-banner" id="testBanner" hidden>
+      <span>🧪 Test mode — the panel server is unreachable, showing sample data. Actions are disabled.</span>
+      <button class="abtn ghost sm" id="testRetryBtn" type="button">Retry</button>
+    </div>
     <div class="login-gate" id="loginGate" hidden>
       <form class="login-card" id="loginForm">
         <div class="login-head">
@@ -33,6 +37,12 @@
     </div>
 
     <div class="app-shell app-shell-hidden" id="appShell">
+      <div class="mobile-bar">
+        <button class="menu-btn" id="menuBtn" type="button" aria-label="Open menu"><span></span><span></span><span></span></button>
+        <img src="Logo.png" alt="" class="mobile-logo" />
+        <span class="mobile-title">TermuCraft</span>
+      </div>
+      <div class="rail-scrim" id="railScrim"></div>
       <aside class="rail">
         <div class="rail-brand">
           <img src="Logo.png" alt="TermuCraft logo" class="rail-logo" />

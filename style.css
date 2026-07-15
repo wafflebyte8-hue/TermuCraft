@@ -2235,3 +2235,639 @@ body {
   font-weight: 700;
   font-size: 14px;
 }
+
+/* ==========================================================================
+   0.8.0 R2 — glass you can actually see + a real phone layout
+   The workspace was too opaque for the aurora to reach the panels, and the
+   stacked mobile layout wasted a full screen on sidebar chrome.
+   ========================================================================== */
+
+/* Calmer base so the aurora is the only color source behind the glass. */
+body {
+  background: linear-gradient(165deg, #ece4d2 0%, #e3d9c2 55%, #d9cdb2 100%);
+}
+
+body::before {
+  background-image:
+    linear-gradient(rgba(27, 39, 31, 0.02) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(27, 39, 31, 0.02) 1px, transparent 1px);
+}
+
+body::after {
+  display: none;
+}
+
+/* Bigger, brighter, faster aurora — the glass needs something to blur. */
+.aurora i {
+  width: 62vmax;
+  height: 62vmax;
+  filter: blur(64px);
+  opacity: 0.85;
+}
+
+.aurora i:nth-child(1) {
+  background: radial-gradient(circle, rgba(112, 190, 60, 0.75), transparent 60%);
+  animation-duration: 15s;
+}
+
+.aurora i:nth-child(2) {
+  background: radial-gradient(circle, rgba(45, 180, 160, 0.65), transparent 60%);
+  animation-duration: 19s;
+}
+
+.aurora i:nth-child(3) {
+  background: radial-gradient(circle, rgba(224, 158, 46, 0.55), transparent 60%);
+  animation-duration: 17s;
+}
+
+@keyframes aurora-drift {
+  from {
+    transform: translate3d(-4vw, -3vh, 0) scale(1);
+  }
+  to {
+    transform: translate3d(12vw, 9vh, 0) scale(1.3);
+  }
+}
+
+.aurora {
+  animation: aurora-hue 36s linear infinite alternate;
+}
+
+@keyframes aurora-hue {
+  from {
+    filter: hue-rotate(0deg);
+  }
+  to {
+    filter: hue-rotate(28deg);
+  }
+}
+
+/* Near-transparent workspace: the aurora shines through every panel now. */
+.workspace {
+  background:
+    linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.24) 0%,
+      rgba(255, 255, 255, 0.06) 30%,
+      rgba(255, 255, 255, 0.02) 60%
+    ),
+    rgba(255, 252, 245, 0.3);
+  backdrop-filter: blur(14px) saturate(150%);
+  -webkit-backdrop-filter: blur(14px) saturate(150%);
+}
+
+.panel,
+.stat-card,
+.config-card,
+.schip,
+.connect-info,
+.health-box {
+  background:
+    linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.4) 0%,
+      rgba(255, 255, 255, 0.08) 32%,
+      rgba(255, 255, 255, 0.02) 65%
+    ),
+    rgba(255, 253, 247, 0.42);
+}
+
+/* The sidebar becomes dark glass instead of solid paint. */
+.rail {
+  background:
+    radial-gradient(circle at top right, rgba(126, 184, 79, 0.2), transparent 32%),
+    rgba(16, 30, 23, 0.78);
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+/* --- Phone layout ------------------------------------------------------- */
+@media (max-width: 980px) {
+  .app-shell {
+    gap: 12px;
+  }
+
+  /* Compact header instead of a full screen of sidebar. */
+  .rail {
+    gap: 10px;
+    padding: 14px;
+  }
+
+  .rail-brand {
+    grid-template-columns: 44px 1fr;
+    gap: 12px;
+  }
+
+  .rail-logo {
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+  }
+
+  .rail-kicker,
+  .rail-copy,
+  .rail-note {
+    display: none;
+  }
+
+  .rail-status-card {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 10px 12px;
+  }
+
+  .status-badge {
+    min-height: 36px;
+  }
+
+  .rail-foot {
+    margin-top: 0;
+    padding-top: 0;
+  }
+
+  /* Horizontal scrolling tab strip, sticky while you scroll. */
+  .tabnav {
+    position: sticky;
+    top: 8px;
+    z-index: 30;
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 6px;
+    padding: 6px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    background: rgba(16, 30, 23, 0.85);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border-radius: 16px;
+  }
+
+  .tabnav::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* The JS indicator is measured for the vertical layout — hide it and give
+     the active tab its own pill instead. */
+  .tab-indicator {
+    display: none;
+  }
+
+  .tnav {
+    flex: none;
+    min-height: 44px;
+    padding: 0 16px;
+    white-space: nowrap;
+  }
+
+  .tnav.active {
+    background: linear-gradient(135deg, var(--accent-deep), var(--accent-2));
+    border-radius: 12px;
+  }
+
+  /* Settings rows keep label-left / control-right instead of stretching
+     checkboxes to full width. */
+  .cfg-row {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  .cfg-row .cfg-inp,
+  .cfg-row .sel {
+    width: auto;
+    max-width: 170px;
+  }
+
+  /* Long values (checksums, addresses) must wrap, never scroll the page. */
+  .tip-cmd,
+  .ci-val,
+  .health-val,
+  .propkey,
+  .schip-val,
+  .server-chip-value {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    min-width: 0;
+  }
+
+  .tip-row,
+  .ci-row,
+  .health-row,
+  .proprow {
+    min-width: 0;
+  }
+}
+
+@media (max-width: 640px) {
+  /* Undo the full-width-everything stacking — compact and tappable instead. */
+  .schip,
+  .abtn,
+  .qbtn {
+    width: auto;
+  }
+
+  .stat-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    width: 100%;
+  }
+
+  .schip {
+    flex: 1 1 auto;
+    min-height: 38px;
+    padding: 0 12px;
+    justify-content: center;
+  }
+
+  /* Start / Stop / Restart / Kill as a 2x2 grid. */
+  .topbar-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .stat-chips {
+    grid-column: 1 / -1;
+  }
+
+  .hbtn {
+    width: 100%;
+  }
+
+  .masthead h2 {
+    font-size: clamp(1.5rem, 6vw, 2rem);
+  }
+
+  .mast-sub {
+    font-size: 13.5px;
+  }
+
+  .tcontent {
+    padding: 4px 2px;
+  }
+
+  .qgrid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .login-card {
+    padding: 20px;
+  }
+
+  .aurora i {
+    filter: blur(48px);
+  }
+
+  body::before {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aurora {
+    animation: none;
+  }
+}
+
+/* Test mode banner (server unreachable, sample data shown). */
+.test-banner {
+  position: fixed;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  /* Above the content, below the drawer (70) and its scrim (65). */
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: min(94vw, 640px);
+  padding: 10px 16px;
+  border: 1px solid rgba(214, 164, 74, 0.6);
+  border-radius: 999px;
+  background: rgba(56, 44, 18, 0.88);
+  color: #ffe9c2;
+  font-size: 13.5px;
+  font-weight: 600;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.test-banner[hidden] {
+  display: none;
+}
+
+.test-banner .abtn {
+  flex: none;
+  color: #ffe9c2;
+  background: rgba(255, 233, 194, 0.14);
+}
+
+@media (max-width: 640px) {
+  .test-banner {
+    flex-wrap: wrap;
+    justify-content: center;
+    border-radius: 18px;
+    text-align: center;
+  }
+}
+
+/* ==========================================================================
+   0.8.0 R3 — hamburger drawer on mobile
+   The rail becomes an off-canvas drawer (full vertical nav, like desktop),
+   opened by the 3-line button in the mobile top bar. Overrides the R2
+   compact-rail rules at <=980px.
+   ========================================================================== */
+
+.mobile-bar,
+.rail-scrim {
+  display: none;
+}
+
+@media (max-width: 980px) {
+  .mobile-bar {
+    position: sticky;
+    top: 8px;
+    z-index: 40;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 12px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 16px;
+    background: rgba(16, 30, 23, 0.86);
+    color: #f4f5ec;
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+  }
+
+  .menu-btn {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 5px;
+    width: 44px;
+    height: 44px;
+    padding: 10px;
+    border: 0;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.08);
+  }
+
+  .menu-btn span {
+    display: block;
+    width: 22px;
+    height: 2px;
+    border-radius: 2px;
+    background: #eef5ee;
+    transition: transform 0.25s var(--spring), opacity 0.2s ease;
+  }
+
+  .rail-open .menu-btn span:nth-child(1) {
+    transform: translateY(7px) rotate(45deg);
+  }
+
+  .rail-open .menu-btn span:nth-child(2) {
+    opacity: 0;
+  }
+
+  .rail-open .menu-btn span:nth-child(3) {
+    transform: translateY(-7px) rotate(-45deg);
+  }
+
+  .mobile-logo {
+    width: 32px;
+    height: 32px;
+    border-radius: 9px;
+  }
+
+  .mobile-title {
+    font-weight: 700;
+    letter-spacing: 0.02em;
+  }
+
+  /* The rail leaves the page flow and becomes a slide-in drawer. */
+  .rail {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 70;
+    width: min(84vw, 340px);
+    padding: 22px;
+    gap: 18px;
+    border-radius: 0 24px 24px 0;
+    background: rgba(13, 24, 18, 0.96);
+    transform: translateX(-108%);
+    transition: transform 0.3s var(--spring);
+    overflow-y: auto;
+  }
+
+  .rail-open .rail {
+    transform: none;
+    box-shadow: 24px 0 80px rgba(0, 0, 0, 0.45);
+  }
+
+  .rail-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 65;
+    background: rgba(8, 14, 10, 0.55);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.25s ease;
+  }
+
+  .rail-open .rail-scrim {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  /* Inside the drawer the rail is the full desktop layout again —
+     undo the R2 compact-header rules. */
+  .rail-kicker,
+  .rail-copy,
+  .rail-note {
+    display: block;
+  }
+
+  .rail-brand {
+    grid-template-columns: 64px 1fr;
+    gap: 14px;
+  }
+
+  .rail-logo {
+    width: 64px;
+    height: 64px;
+    border-radius: 16px;
+  }
+
+  .rail-status-card {
+    display: grid;
+    gap: 12px;
+    padding: 16px;
+  }
+
+  .tabnav {
+    position: static;
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 8px;
+    padding: 8px;
+    /* Grow with the items and let the whole drawer scroll — with the base
+       flex:1 + overflow:visible combo the items spill over the footer. */
+    flex: none;
+    min-height: auto;
+    overflow: visible;
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: 24px;
+  }
+
+  .tnav {
+    white-space: normal;
+    text-align: left;
+  }
+
+  .rail-foot {
+    margin-top: 12px;
+    padding-top: 8px;
+  }
+}
+
+@media (max-width: 640px) {
+  .rail-brand {
+    grid-template-columns: 64px 1fr;
+  }
+}
+
+/* ==========================================================================
+   0.8.0 R4 — de-duplicated mobile dashboard + readable settings rows
+   ========================================================================== */
+
+@media (max-width: 980px) {
+  /* The topbar chips repeat the stat cards right below them, and the
+     masthead doubles the per-tab heading - drop both on mobile. The
+     mobile-bar already carries the brand. */
+  .masthead,
+  .stat-chips {
+    display: none;
+  }
+
+  .topbar {
+    padding: 0;
+  }
+
+  .topbar-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    width: 100%;
+  }
+
+  .hbtn {
+    width: 100%;
+    min-height: 48px;
+  }
+
+  /* One settings card per row - two crushed columns helped nobody. */
+  .config-cards {
+    grid-template-columns: 1fr;
+  }
+
+  /* Settings rows: label on top, control full-width below... */
+  .cfg-row {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .cfg-row .cfg-inp,
+  .cfg-row .sel {
+    width: 100%;
+    max-width: none;
+  }
+
+  /* ...except compact controls (checkboxes, toggles, buttons), which sit
+     inline to the right of their label. */
+  .cfg-row:has(> input[type="checkbox"]),
+  .cfg-row:has(> .ptoggle),
+  .cfg-row:has(> button) {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .cfg-row > input[type="checkbox"],
+  .cfg-row > button {
+    flex: none;
+  }
+}
+
+/* ==========================================================================
+   0.8.0 R5 — the stat bars were invisible since day one: app.js colors them
+   with var(--green/--amber/--red/--blue), which were never defined. An
+   undefined variable voids the inline style, so the fills painted
+   transparent. Define them, and give fills a fallback color.
+   ========================================================================== */
+
+:root {
+  --green: #37a869;
+  --amber: #cf7a2b;
+  --red: #b24b43;
+  --blue: #4a7fb5;
+}
+
+.stat-bar-fill {
+  background: var(--accent-2);
+}
+
+.spark polyline {
+  stroke: var(--green);
+}
+
+.spark polygon {
+  fill: var(--green);
+}
+
+/* ==========================================================================
+   0.8.0 R6 — desktop topbar: stop the chips + buttons from free-wrapping
+   into ragged rows. Chips get their own right-aligned row, the four control
+   buttons line up in one row underneath.
+   ========================================================================== */
+
+@media (min-width: 981px) {
+  .topbar-actions {
+    display: grid;
+    grid-template-columns: repeat(4, auto);
+    justify-content: end;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .topbar-actions .stat-chips {
+    grid-column: 1 / -1;
+    justify-content: flex-end;
+  }
+}
+
+/* 0.8.0 R7 — no duplicate readouts anywhere: the Flight Deck cards are the
+   single source for CPU/RAM/uptime/players. The topbar keeps only actions. */
+.stat-chips {
+  display: none;
+}
