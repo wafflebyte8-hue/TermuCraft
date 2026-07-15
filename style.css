@@ -1800,3 +1800,438 @@ img {
     max-width: none;
   }
 }
+
+/* ==========================================================================
+   0.8.0 — Liquid glass layer
+   Frosted panels over an animated aurora, specular highlights, springy
+   motion, and phone-sized touch targets. Overrides the paper theme above.
+   ========================================================================== */
+
+:root {
+  --glass: rgba(255, 252, 245, 0.58);
+  --glass-strong: rgba(255, 253, 248, 0.72);
+  --glass-edge: rgba(255, 255, 255, 0.65);
+  --glass-shine:
+    linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.45) 0%,
+      rgba(255, 255, 255, 0.1) 26%,
+      rgba(255, 255, 255, 0) 55%
+    );
+  --spring: cubic-bezier(0.22, 0.8, 0.26, 0.99);
+}
+
+body {
+  background:
+    radial-gradient(circle at 12% -4%, rgba(126, 184, 79, 0.32), transparent 34%),
+    radial-gradient(circle at 92% 8%, rgba(76, 182, 127, 0.26), transparent 30%),
+    radial-gradient(circle at 70% 110%, rgba(201, 150, 66, 0.16), transparent 34%),
+    linear-gradient(160deg, #f4efdf 0%, #e9e2ce 48%, #dfd6bf 100%);
+}
+
+/* Drifting aurora blobs behind the glass. */
+.aurora {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.aurora i {
+  position: absolute;
+  width: 46vmax;
+  height: 46vmax;
+  border-radius: 50%;
+  filter: blur(72px);
+  opacity: 0.5;
+  will-change: transform;
+}
+
+.aurora i:nth-child(1) {
+  top: -18vmax;
+  left: -10vmax;
+  background: radial-gradient(circle, rgba(126, 184, 79, 0.5), transparent 62%);
+  animation: aurora-drift 26s ease-in-out infinite alternate;
+}
+
+.aurora i:nth-child(2) {
+  right: -14vmax;
+  top: 10vmax;
+  background: radial-gradient(circle, rgba(76, 182, 168, 0.42), transparent 62%);
+  animation: aurora-drift 34s ease-in-out infinite alternate-reverse;
+}
+
+.aurora i:nth-child(3) {
+  left: 22vw;
+  bottom: -20vmax;
+  background: radial-gradient(circle, rgba(214, 164, 74, 0.34), transparent 62%);
+  animation: aurora-drift 30s ease-in-out infinite alternate;
+  animation-delay: -12s;
+}
+
+@keyframes aurora-drift {
+  from {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  to {
+    transform: translate3d(9vw, 6vh, 0) scale(1.18);
+  }
+}
+
+.app-shell,
+.login-gate,
+#toast {
+  position: relative;
+  z-index: 1;
+}
+
+.login-gate {
+  position: fixed;
+}
+
+/* Frosted glass surfaces with a specular streak. */
+.workspace {
+  background:
+    var(--glass-shine),
+    linear-gradient(180deg, rgba(255, 251, 243, 0.6), rgba(252, 246, 235, 0.44));
+  border: 1px solid var(--glass-edge);
+  backdrop-filter: blur(22px) saturate(160%);
+  -webkit-backdrop-filter: blur(22px) saturate(160%);
+  box-shadow:
+    var(--shadow),
+    inset 0 1px 0 rgba(255, 255, 255, 0.75);
+}
+
+.panel,
+.stat-card,
+.config-card,
+.schip,
+.connect-info,
+.health-box {
+  background:
+    var(--glass-shine),
+    var(--glass);
+  border: 1px solid var(--glass-edge);
+  backdrop-filter: blur(16px) saturate(150%);
+  -webkit-backdrop-filter: blur(16px) saturate(150%);
+  box-shadow:
+    var(--shadow-soft),
+    inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.login-card {
+  background:
+    var(--glass-shine),
+    var(--glass-strong);
+  border: 1px solid var(--glass-edge);
+  backdrop-filter: blur(24px) saturate(160%);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+}
+
+.cfg-inp,
+.sel,
+.pinput,
+.srch-inp,
+.motd-input,
+.file-textarea {
+  background: rgba(255, 255, 255, 0.55);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.hbtn-ghost,
+.abtn.ghost,
+.fchip,
+.icon-btn {
+  background: rgba(255, 255, 255, 0.5);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+/* Springy, tactile motion. */
+.panel,
+.stat-card,
+.config-card {
+  transition:
+    transform 0.28s var(--spring),
+    box-shadow 0.28s var(--spring),
+    background 0.28s var(--spring);
+}
+
+.stat-card:hover,
+.panel:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    0 22px 48px rgba(32, 39, 27, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+
+.abtn:active,
+.hbtn:active,
+.qbtn:active,
+.fchip:active,
+.tnav:active,
+.icon-btn:active {
+  transform: scale(0.96);
+}
+
+.tab.active {
+  animation: tab-in 0.34s var(--spring);
+}
+
+@keyframes tab-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.995);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Live sparklines under CPU / Memory. */
+.spark {
+  display: block;
+  width: 100%;
+  height: 30px;
+  margin-top: 12px;
+  overflow: visible;
+}
+
+.spark polyline {
+  fill: none;
+  stroke: var(--accent-2);
+  stroke-width: 1.8;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  transition: stroke 0.4s ease;
+}
+
+.spark polygon {
+  fill: var(--accent-2);
+  opacity: 0.12;
+  transition: fill 0.4s ease;
+}
+
+/* The uptime bar used to be a dead line — keep it breathing while running. */
+.stat-bar-fill.uptime {
+  width: 100%;
+  background:
+    linear-gradient(
+      90deg,
+      rgba(76, 182, 127, 0.12),
+      rgba(76, 182, 127, 0.55),
+      rgba(76, 182, 127, 0.12)
+    );
+  background-size: 200% 100%;
+  animation: uptime-slide 3.2s linear infinite;
+}
+
+@keyframes uptime-slide {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: 0% 0;
+  }
+}
+
+/* Sleep mode badge. */
+.status-badge.sleeping {
+  color: #efe9ff;
+  background: rgba(124, 108, 224, 0.34);
+}
+
+.status-badge.sleeping .badge-dot {
+  animation: badge-breathe 2.4s ease-in-out infinite;
+}
+
+@keyframes badge-breathe {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.05);
+  }
+}
+
+/* Tap-to-copy affordance. */
+.copyable {
+  cursor: pointer;
+  border-bottom: 1px dashed transparent;
+  transition: border-color 0.2s ease, opacity 0.2s ease;
+}
+
+.copyable:hover {
+  border-bottom-color: currentColor;
+}
+
+.copyable:active {
+  opacity: 0.6;
+}
+
+:focus-visible {
+  outline: 2px solid rgba(76, 182, 127, 0.85);
+  outline-offset: 2px;
+}
+
+/* Phone-sized ergonomics. */
+@media (max-width: 980px) {
+  .workspace,
+  .panel,
+  .stat-card,
+  .config-card,
+  .login-card {
+    backdrop-filter: blur(12px) saturate(150%);
+    -webkit-backdrop-filter: blur(12px) saturate(150%);
+  }
+
+  .tnav,
+  .abtn,
+  .hbtn,
+  .qbtn {
+    min-height: 48px;
+  }
+
+  #console {
+    max-height: 55dvh;
+  }
+}
+
+@media (max-width: 640px) {
+  .stat-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .stat-card {
+    padding: 14px;
+  }
+
+  .stat-value {
+    font-size: 1.35rem;
+  }
+
+  .page-title {
+    font-size: 1.5rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aurora i,
+  .stat-bar-fill.uptime,
+  .status-badge.sleeping .badge-dot,
+  .tab.active {
+    animation: none;
+  }
+
+  .panel,
+  .stat-card,
+  .config-card {
+    transition: none;
+  }
+}
+
+/* Aternos-style property controls (0.8.0). */
+.ptoggle {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  cursor: pointer;
+}
+
+.ptoggle input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.ptoggle-track {
+  position: relative;
+  display: block;
+  width: 54px;
+  height: 30px;
+  border: 1px solid var(--glass-edge);
+  border-radius: 999px;
+  background: rgba(178, 75, 67, 0.4);
+  transition: background 0.25s var(--spring);
+}
+
+.ptoggle-thumb {
+  position: absolute;
+  top: 2px;
+  left: 3px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.28);
+  transition: transform 0.25s var(--spring);
+}
+
+.ptoggle input:checked + .ptoggle-track {
+  background: rgba(76, 182, 127, 0.6);
+}
+
+.ptoggle input:checked + .ptoggle-track .ptoggle-thumb {
+  transform: translateX(23px);
+}
+
+.ptoggle input:focus-visible + .ptoggle-track {
+  outline: 2px solid rgba(76, 182, 127, 0.85);
+  outline-offset: 2px;
+}
+
+.pstep {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.pstep-btn {
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--glass-edge);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.5);
+  font-weight: 700;
+  font-size: 16px;
+  line-height: 1;
+  transition: transform 0.16s ease, background 0.16s ease;
+}
+
+.pstep-btn:hover {
+  background: rgba(255, 255, 255, 0.75);
+}
+
+.pstep-btn:active {
+  transform: scale(0.92);
+}
+
+.pinput.pnum {
+  width: 92px;
+  min-height: 36px;
+  text-align: center;
+}
+
+.propdesc {
+  margin-top: 2px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.root-banner {
+  margin: 6px 0 2px;
+  padding: 10px 14px;
+  border: 1px solid rgba(214, 164, 74, 0.5);
+  border-radius: 14px;
+  background: rgba(214, 164, 74, 0.14);
+  font-weight: 700;
+  font-size: 14px;
+}

@@ -7,7 +7,11 @@ const state = {
   players: [],
   config: {},
   props: {},
-  stats: { cpu: 0, ram: 0, diskUsed: 0, diskTotal: 0 },
+  stats: { cpu: 0, ram: 0, diskUsed: 0, diskTotal: 0, cpuCores: 1 },
+  history: { cpu: [], ram: [] },
+  sleep: null,
+  lastSeq: 0,
+  pollTimer: null,
   network: { lanIp: '', mcPort: '25565', panelPort: '8080' },
   download: null,
   selectedVersionType: 'paper',
@@ -236,8 +240,13 @@ function connectSocket() {
     state.ws = null;
     setWsStatus(false);
     if (event.code === 4001) {
+      // Session may have just been created (login race) - retry when authed.
       checkAuth().then((authenticated) => {
         if (!authenticated) showLogin(true, 'Session expired');
+        else {
+          clearTimeout(state.reconnectTimer);
+          state.reconnectTimer = setTimeout(connectSocket, 1500);
+        }
       });
       return;
     }
@@ -248,13 +257,44 @@ function connectSocket() {
   };
 }
 
+// Console lifeline: when the WebSocket is down (flaky mobile browsers,
+// battery savers), poll the REST endpoint so logs and stats keep flowing.
+function startConsolePolling() {
+  if (state.pollTimer) return;
+  state.pollTimer = setInterval(async () => {
+    if (state.ws && state.ws.readyState === 1) return;
+    if ($('loginGate').classList.contains('visible')) return;
+    try {
+      const data = await api(`/api/logs?after=${state.lastSeq}`);
+      (data.logs || []).forEach((entry) => {
+        if (entry.seq && entry.seq <= state.lastSeq) return;
+        if (entry.seq) state.lastSeq = entry.seq;
+        state.logs.push(entry);
+        appendLog(entry);
+      });
+      if (state.logs.length > 3000) state.logs = state.logs.slice(-3000);
+      if (data.stats) {
+        state.stats = { ...state.stats, ...data.stats };
+        updateStats();
+      }
+    } catch {
+      // Offline or logged out - the next tick retries.
+    }
+  }, 3000);
+}
+
 function handleSocket(message) {
   if (message.type === 'history') {
     state.logs = message.logs || [];
+    state.logs.forEach((entry) => {
+      if (entry.seq > state.lastSeq) state.lastSeq = entry.seq;
+    });
     renderLogs();
     return;
   }
   if (message.type === 'log') {
+    if (message.seq && message.seq <= state.lastSeq) return;
+    if (message.seq) state.lastSeq = message.seq;
     state.logs.push(message);
     if (state.logs.length > 3000) state.logs.shift();
     appendLog(message);
@@ -271,6 +311,7 @@ function handleSocket(message) {
   }
   if (message.type === 'uptime') {
     updateUptime(message.uptime);
+    applySleepTick(message.sleep);
     return;
   }
   if (message.type === 'config') {
@@ -301,21 +342,31 @@ function applyStatus(status) {
   state.lastCrash = status.lastCrash || null;
 
   const running = !!status.running;
+  state.sleep = status.sleep || state.sleep;
+  const sleep = state.sleep || {};
+  const asleep = !running && (sleep.sleeping || sleep.waking);
   const wasStopped = $('statusBadge').classList.contains('stopped');
-  $('statusBadge').className = `status-badge ${running ? 'running' : 'stopped'}`;
-  $('badgeTxt').textContent = running ? 'RUNNING' : 'STOPPED';
+  $('statusBadge').className = `status-badge ${running ? 'running' : asleep ? 'sleeping' : 'stopped'}`;
+  $('badgeTxt').textContent = running ? 'RUNNING' : sleep.waking ? 'WAKING' : sleep.sleeping ? 'SLEEPING' : 'STOPPED';
   if (running && wasStopped) {
     void $('statusBadge').offsetWidth;
     $('statusBadge').classList.add('burst');
     setTimeout(() => $('statusBadge').classList.remove('burst'), 600);
   }
+  if ($('rootRows')) $('rootRows').hidden = !status.rootAvailable;
   $('btnStart').disabled = running;
   $('btnStopTop').disabled = !running;
   $('btnRestart').disabled = !running;
   $('btnKillTop').disabled = !running;
   $('cmdi').disabled = !running;
   $('sendCmdBtn').disabled = !running;
-  $('dStatus').textContent = running ? 'Currently running' : 'Not currently running';
+  $('dStatus').textContent = running
+    ? 'Currently running'
+    : sleep.waking
+      ? 'Waking up — a player knocked'
+      : sleep.sleeping
+        ? 'Sleeping — join to wake'
+        : 'Not currently running';
   updateUptime(status.uptime);
   renderPlayers();
   renderHealth(status);
@@ -333,6 +384,12 @@ function applyConfig(config) {
   if ($('authUsername') && !$('authUsername').value) $('authUsername').value = state.auth.handle || '';
   if ($('autoRestart')) $('autoRestart').checked = !!state.config.autoRestart;
   if ($('autoRestartDelay')) $('autoRestartDelay').value = state.config.autoRestartDelaySec ?? 10;
+  if ($('idleStop')) $('idleStop').value = state.config.idleStopMinutes ?? 60;
+  if ($('optFlags')) $('optFlags').checked = state.config.optimizedFlags !== false;
+  if ($('rootBoost')) $('rootBoost').checked = !!state.config.rootBoost;
+  if ($('autoUpdatePlugins')) $('autoUpdatePlugins').checked = state.config.autoUpdatePlugins !== false;
+  if ($('autoUpdateServer')) $('autoUpdateServer').checked = state.config.autoUpdateServer !== false;
+  if ($('autoUpdateChannel')) $('autoUpdateChannel').value = state.config.autoUpdateServerChannel === 'version' ? 'version' : 'build';
   if ($('backupRetention')) $('backupRetention').value = state.config.backupRetention ?? 5;
   if ($('schedBackup')) $('schedBackup').value = state.config.scheduleBackupMinutes ?? 0;
   if ($('schedBroadcast')) $('schedBroadcast').value = state.config.scheduleBroadcastMinutes ?? 0;
@@ -380,6 +437,9 @@ function applyNetwork(network) {
     : 'Not installed (see Builds tab)';
   if ($('ciBedrock')) $('ciBedrock').textContent = bedrockText;
   if ($('bedrockLAN')) $('bedrockLAN').textContent = bedrockText;
+  if ($('viaStatus')) $('viaStatus').textContent = state.network.versionSupportInstalled
+    ? 'Installed — Java players on other versions can join'
+    : 'Drops the latest Via jars into your plugins folder.';
   if ($('panelPublic')) $('panelPublic').textContent = state.network.publicPanelUrl || 'Not configured';
   if ($('duckDnsHost')) $('duckDnsHost').textContent = state.network.duckDnsHost || 'Not configured';
   if ($('duckDnsState')) {
@@ -403,15 +463,45 @@ function updateUptime(uptime) {
   $('dUp').className = uptime ? 'stat-value' : 'stat-value dim';
 }
 
+function pushHistory(key, value) {
+  const series = state.history[key];
+  series.push(Math.max(0, Math.min(100, Number(value) || 0)));
+  if (series.length > 60) series.shift();
+}
+
+// Tiny SVG sparkline: newest sample pinned to the right edge.
+function renderSpark(id, values, color) {
+  const node = $(id);
+  if (!node || values.length < 2) return;
+  const step = 100 / 59;
+  const points = values
+    .map((v, i) => `${(100 - (values.length - 1 - i) * step).toFixed(2)},${(28 - (v / 100) * 25).toFixed(2)}`)
+    .join(' ');
+  const line = node.querySelector('polyline');
+  if (line) {
+    line.setAttribute('points', points);
+    line.style.stroke = color;
+  }
+  const area = node.querySelector('polygon');
+  if (area) {
+    const firstX = (100 - (values.length - 1) * step).toFixed(2);
+    area.setAttribute('points', `${points} 100,30 ${firstX},30`);
+    area.style.fill = color;
+  }
+}
+
 function updateStats() {
+  const cores = Math.max(1, Number(state.stats.cpuCores) || 1);
+  const cpuMax = cores * 100;
   const cpu = Number(state.stats.cpu) || 0;
+  const cpuPct = Math.max(0, Math.min((cpu / cpuMax) * 100, 100));
   const ramMB = Number(state.stats.ram) || 0;
   const ramLimitMB = getMemoryLimitMB();
   const ramPct = ramLimitMB > 0 ? Math.min((ramMB / ramLimitMB) * 100, 100) : 0;
   const diskUsed = Number(state.stats.diskUsed) || 0;
   const diskTotal = Number(state.stats.diskTotal) || 0;
   const diskPct = diskTotal > 0 ? Math.min((diskUsed / diskTotal) * 100, 100) : 0;
-  const cpuColor = cpu > 70 ? 'var(--red)' : cpu > 40 ? 'var(--amber)' : 'var(--green)';
+  const cpuColor = cpuPct > 70 ? 'var(--red)' : cpuPct > 40 ? 'var(--amber)' : 'var(--green)';
   const ramColor = ramPct > 80 ? 'var(--red)' : ramPct > 60 ? 'var(--amber)' : 'var(--green)';
   const diskColor = diskPct > 90 ? 'var(--red)' : diskPct > 75 ? 'var(--amber)' : 'var(--blue)';
   flashIfChanged('tCpu', `${cpu.toFixed(cpu % 1 ? 1 : 0)}%`);
@@ -419,10 +509,10 @@ function updateStats() {
   $('dCpu').textContent = `${cpu.toFixed(cpu % 1 ? 1 : 0)}%`;
   $('dRam').textContent = ramMB >= 1024 ? `${(ramMB / 1024).toFixed(1)} GB` : `${Math.round(ramMB)} MB`;
   $('dDisk').textContent = fmtBytes(diskUsed);
-  $('cpuSub').textContent = 'of 200% max';
+  $('cpuSub').textContent = `of ${cpuMax}% max (${cores} core${cores > 1 ? 's' : ''})`;
   $('ramSub').textContent = ramLimitMB > 0 ? `of ${fmtBytes(ramLimitMB * 1024 * 1024)} (${ramPct.toFixed(1)}%)` : 'Memory limit unavailable';
   $('diskSub').textContent = diskTotal > 0 ? `of ${fmtBytes(diskTotal)} (${diskPct.toFixed(1)}%)` : 'Storage unavailable';
-  $('cpuBar').style.width = `${Math.max(0, Math.min(cpu / 2, 100))}%`;
+  $('cpuBar').style.width = `${cpuPct}%`;
   $('ramBar').style.width = `${Math.max(0, ramPct)}%`;
   $('diskBar').style.width = `${Math.max(0, diskPct)}%`;
   $('dCpu').style.color = cpuColor;
@@ -431,6 +521,23 @@ function updateStats() {
   $('cpuBar').style.background = cpuColor;
   $('ramBar').style.background = ramColor;
   $('diskBar').style.background = diskColor;
+  pushHistory('cpu', cpuPct);
+  pushHistory('ram', ramPct);
+  renderSpark('cpuSpark', state.history.cpu, cpuColor);
+  renderSpark('ramSpark', state.history.ram, ramColor);
+}
+
+function applySleepTick(sleep) {
+  if (!sleep) return;
+  state.sleep = sleep;
+  if (sleep.stopsInMs != null) {
+    const minutes = Math.max(1, Math.ceil(sleep.stopsInMs / 60000));
+    $('dStatus').textContent = `Empty — sleeps in ${minutes} min`;
+  } else if (sleep.waking) {
+    $('dStatus').textContent = 'Waking up — a player knocked';
+  } else if (sleep.sleeping) {
+    $('dStatus').textContent = 'Sleeping — join to wake';
+  }
 }
 
 function renderHealth(status = {}) {
@@ -708,6 +815,12 @@ async function saveSettings() {
     scheduleBroadcastMessage: $('schedMessage').value,
     scheduleRestartTime: $('schedRestart').value.trim(),
   };
+  if ($('idleStop')) payload.idleStopMinutes = $('idleStop').value.trim() || 0;
+  if ($('optFlags')) payload.optimizedFlags = $('optFlags').checked;
+  if ($('rootBoost')) payload.rootBoost = $('rootBoost').checked;
+  if ($('autoUpdatePlugins')) payload.autoUpdatePlugins = $('autoUpdatePlugins').checked;
+  if ($('autoUpdateServer')) payload.autoUpdateServer = $('autoUpdateServer').checked;
+  if ($('autoUpdateChannel')) payload.autoUpdateServerChannel = $('autoUpdateChannel').value;
   if ($('ddnsEnabled')) payload.duckDnsEnabled = $('ddnsEnabled').checked;
   if ($('ddnsDomain')) payload.duckDnsDomain = $('ddnsDomain').value.trim();
   if ($('ddnsInterval')) payload.duckDnsIntervalMinutes = $('ddnsInterval').value.trim();
@@ -946,13 +1059,17 @@ function renderProperties(data, search = '') {
     props.forEach(({ key, meta, value }) => {
       let input = '';
       if (meta.t === 'bool') {
-        input = `<select class="pinput pnarrow" data-key="${esc(key)}"><option value="true" ${value === 'true' ? 'selected' : ''}>true</option><option value="false" ${value !== 'true' ? 'selected' : ''}>false</option></select>`;
+        const checked = meta.inv ? value !== 'true' : value === 'true';
+        input = `<label class="ptoggle"><input type="checkbox" data-key="${esc(key)}" data-bool="1" ${meta.inv ? 'data-inv="1"' : ''} ${checked ? 'checked' : ''} /><span class="ptoggle-track"><span class="ptoggle-thumb"></span></span></label>`;
       } else if (meta.t === 'sel') {
         input = `<select class="pinput" data-key="${esc(key)}">${meta.o.map((option) => `<option ${value === option ? 'selected' : ''}>${esc(option)}</option>`).join('')}</select>`;
+      } else if (meta.t === 'number') {
+        input = `<div class="pstep"><button type="button" class="pstep-btn" data-step="-1" aria-label="decrease">&minus;</button><input class="pinput pnum" data-key="${esc(key)}" type="number" value="${esc(value)}" /><button type="button" class="pstep-btn" data-step="1" aria-label="increase">+</button></div>`;
       } else {
-        input = `<input class="pinput" data-key="${esc(key)}" type="${meta.t || 'text'}" value="${esc(value)}" />`;
+        input = `<input class="pinput" data-key="${esc(key)}" type="text" value="${esc(value)}" />`;
       }
-      html += `<div class="proprow"><div class="propinfo"><div class="propname">${esc(meta.l)}</div><div class="propkey">${esc(key)}</div></div>${input}</div>`;
+      const hint = meta.d ? `<div class="propdesc">${esc(meta.d)}</div>` : '';
+      html += `<div class="proprow"><div class="propinfo"><div class="propname">${esc(meta.l)}</div>${hint}<div class="propkey" data-raw-for="${esc(key)}">${esc(key)}=${esc(value)}</div></div>${input}</div>`;
     });
     html += '</div>';
   });
@@ -971,7 +1088,7 @@ function renderProperties(data, search = '') {
 async function saveProperties() {
   const payload = {};
   document.querySelectorAll('[data-key]').forEach((node) => {
-    payload[node.dataset.key] = node.value;
+    payload[node.dataset.key] = node.dataset.bool ? boolInputValue(node) : node.value;
   });
   await api('/api/properties', { method: 'POST', body: payload });
   await loadPanelSnapshots();
@@ -1061,6 +1178,7 @@ async function uploadJar(kind) {
 async function bootstrap() {
   if (!state.bootstrapped) {
     connectSocket();
+    startConsolePolling();
     state.bootstrapped = true;
   } else if (!state.ws) {
     connectSocket();
@@ -1130,6 +1248,56 @@ function bindEvents() {
     if (value) sendCommand(`say ${value}`).catch((error) => toast(error.message, 'err'));
   });
   $('saveSettingsBtn').addEventListener('click', () => saveSettings().catch((error) => toast(error.message, 'err')));
+  document.querySelectorAll('.copyable').forEach((node) => node.addEventListener('click', () => {
+    const text = node.textContent.trim();
+    if (!text || text === '-' || text.startsWith('Not installed')) return;
+    navigator.clipboard?.writeText(text).then(() => toast(`Copied ${text}`, 'ok')).catch(() => {});
+  }));
+  $('propsBox').addEventListener('click', (event) => {
+    const btn = event.target.closest('.pstep-btn');
+    if (!btn) return;
+    const inputEl = btn.parentElement.querySelector('input[data-key]');
+    if (!inputEl) return;
+    inputEl.value = String((Number(inputEl.value) || 0) + Number(btn.dataset.step));
+    inputEl.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  $('propsBox').addEventListener('change', (event) => {
+    const node = event.target.closest('[data-key]');
+    if (!node) return;
+    const raw = $('propsBox').querySelector(`[data-raw-for="${CSS.escape(node.dataset.key)}"]`);
+    if (raw) raw.textContent = `${node.dataset.key}=${node.dataset.bool ? boolInputValue(node) : node.value}`;
+  });
+  $('updateCheckBtn')?.addEventListener('click', async () => {
+    try {
+      toast('Checking for updates...', 'info');
+      const server = await api('/api/server/update-check', { method: 'POST' });
+      const plugins = await api('/api/plugins/update-check', { method: 'POST' });
+      const bits = [];
+      if (server.update) bits.push(server.pending ? `Server: ${server.update.version} queued for next stop` : `Server updated to ${server.update.version}`);
+      if ((plugins.updated || []).length) bits.push(`Plugins: ${plugins.updated.join(', ')}`);
+      toast(bits.length ? bits.join(' | ') : 'Everything is up to date', 'ok');
+      await loadStatus();
+    } catch (error) {
+      toast(error.message, 'err');
+    }
+  });
+  $('rootBoostBtn')?.addEventListener('click', async () => {
+    try {
+      const result = await api('/api/root/boost', { method: 'POST' });
+      const failed = (result.steps || []).filter((step) => !step.ok).length;
+      toast(failed ? `Root boost: ${failed} step(s) failed, see console` : 'Root boost applied ⚡', failed ? 'err' : 'ok');
+    } catch (error) {
+      toast(error.message, 'err');
+    }
+  });
+  $('downloadLogBtn')?.addEventListener('click', () => {
+    const text = state.logs.map((entry) => `[${entry.time}] [${entry.type}] ${entry.text}`).join('\n');
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
+    link.download = `termucraft-log-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}.txt`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  });
   $('updateDuckDnsBtn')?.addEventListener('click', () => updateDuckDnsNow().catch((error) => toast(error.message, 'err')));
   $('exportPanelSnapshotBtn')?.addEventListener('click', () => exportPanelSnapshot().catch((error) => toast(error.message, 'err')));
   $('importPanelSnapshotBtn')?.addEventListener('click', () => $('panelSnapshotFile')?.click());
@@ -1193,6 +1361,16 @@ function bindEvents() {
     }
     await Promise.all([loadPlugins(), loadFiles()]);
     toast('Crossplay plugin install started', 'ok');
+  });
+  $('installViaBtn')?.addEventListener('click', async () => {
+    try {
+      const data = await api('/api/versionsupport/install', { method: 'POST' });
+      if (data.error) throw new Error(data.error);
+      await Promise.all([loadPlugins(), loadFiles(), loadStatus()]);
+      toast('Version support installed', 'ok');
+    } catch (error) {
+      toast(error.message, 'err');
+    }
   });
   $('reloadModsBtn').addEventListener('click', () => loadMods().catch((error) => toast(error.message, 'err')));
   $('reloadPluginsBtn').addEventListener('click', () => loadPlugins().catch((error) => toast(error.message, 'err')));
@@ -1282,7 +1460,7 @@ const PMETA = {
   'level-type': { l: 'World Type', g: 'General', t: 'sel', o: ['minecraft:default', 'minecraft:flat', 'minecraft:large_biomes', 'minecraft:amplified'] },
   'level-seed': { l: 'Seed', g: 'General' },
   'server-port': { l: 'Port', g: 'Network', t: 'number' },
-  'online-mode': { l: 'Online Mode', g: 'Network', t: 'bool' },
+  'online-mode': { l: 'Cracked', g: 'Network', t: 'bool', inv: true, d: 'Allow players without a paid Java account' },
   'white-list': { l: 'Whitelist', g: 'Network', t: 'bool' },
   'view-distance': { l: 'View Distance', g: 'Performance', t: 'number' },
   'simulation-distance': { l: 'Simulation Distance', g: 'Performance', t: 'number' },
@@ -1299,10 +1477,18 @@ const PMETA = {
   'enable-command-block': { l: 'Command Blocks', g: 'World', t: 'bool' },
   'force-gamemode': { l: 'Force Gamemode', g: 'Rules', t: 'bool' },
   hardcore: { l: 'Hardcore', g: 'Rules', t: 'bool' },
+  'require-resource-pack': { l: 'Resource Pack Required', g: 'Resource Pack', t: 'bool' },
+  'resource-pack': { l: 'Resource Pack URL', g: 'Resource Pack' },
+  'resource-pack-prompt': { l: 'Resource Pack Prompt', g: 'Resource Pack' },
   'enable-rcon': { l: 'RCON', g: 'Advanced', t: 'bool' },
   'rcon.port': { l: 'RCON Port', g: 'Advanced', t: 'number' },
   'enable-query': { l: 'Query', g: 'Advanced', t: 'bool' },
 };
+
+function boolInputValue(node) {
+  const actual = node.dataset.inv ? !node.checked : node.checked;
+  return String(actual);
+}
 
 
 // ── UI Animation & Helper Functions ──────────────────────────────

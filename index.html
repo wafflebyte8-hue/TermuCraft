@@ -8,6 +8,7 @@
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
+    <div class="aurora" aria-hidden="true"><i></i><i></i><i></i></div>
     <div class="login-gate" id="loginGate" hidden>
       <form class="login-card" id="loginForm">
         <div class="login-head">
@@ -113,13 +114,15 @@
             <div class="stat-card">
               <div class="stat-card-header"><div class="stat-icon cpu"></div><span class="stat-label">CPU</span></div>
               <div class="stat-value" id="dCpu">0%</div>
-              <div class="stat-sub" id="cpuSub">of 200% max</div>
+              <div class="stat-sub" id="cpuSub">measuring...</div>
+              <svg class="spark" id="cpuSpark" viewBox="0 0 100 30" preserveAspectRatio="none"><polygon points="" /><polyline points="" /></svg>
               <div class="stat-bar"><div class="stat-bar-fill cpu" id="cpuBar"></div></div>
             </div>
             <div class="stat-card">
               <div class="stat-card-header"><div class="stat-icon ram"></div><span class="stat-label">Memory</span></div>
               <div class="stat-value" id="dRam">0 MB</div>
               <div class="stat-sub" id="ramSub">limit unavailable</div>
+              <svg class="spark" id="ramSpark" viewBox="0 0 100 30" preserveAspectRatio="none"><polygon points="" /><polyline points="" /></svg>
               <div class="stat-bar"><div class="stat-bar-fill ram" id="ramBar"></div></div>
             </div>
             <div class="stat-card">
@@ -154,9 +157,9 @@
                 <textarea class="motd-input" id="motdInput"></textarea>
               </div>
               <div class="connect-info">
-                <div class="ci-row"><span class="ci-lbl">LAN IP</span><span class="ci-val" id="ciIP">-</span></div>
-                <div class="ci-row"><span class="ci-lbl">MC Port</span><span class="ci-val" id="ciPort">25565</span></div>
-                <div class="ci-row"><span class="ci-lbl">Bedrock</span><span class="ci-val" id="ciBedrock">Not installed</span></div>
+                <div class="ci-row"><span class="ci-lbl">LAN IP</span><span class="ci-val copyable" id="ciIP" title="Tap to copy">-</span></div>
+                <div class="ci-row"><span class="ci-lbl">MC Port</span><span class="ci-val copyable" id="ciPort" title="Tap to copy">25565</span></div>
+                <div class="ci-row"><span class="ci-lbl">Bedrock</span><span class="ci-val copyable" id="ciBedrock" title="Tap to copy">Not installed</span></div>
                 <div class="ci-row"><span class="ci-lbl">Type</span><span class="ci-val" id="ciType">-</span></div>
                 <div class="ci-row"><span class="ci-lbl">Version</span><span class="ci-val" id="ciVer">-</span></div>
               </div>
@@ -245,6 +248,7 @@
             </div>
             <div class="filter-row">
               <label class="asc-label"><input type="checkbox" id="autoScroll" checked /> Auto-scroll</label>
+              <button class="abtn ghost sm" id="downloadLogBtn">Download</button>
               <button class="abtn ghost sm" id="clearConsoleBtn">Clear</button>
             </div>
           </div>
@@ -440,6 +444,18 @@
           </div>
 
           <div class="panel" style="margin-top: 14px">
+            <div class="panel-title">Version Support</div>
+            <div class="panel-sub">Let Java players on older and newer game versions join this server. Bedrock version coverage comes from Geyser, which the panel keeps updated automatically.</div>
+            <div class="ready-apply-bar" style="margin-top: 10px">
+              <div>
+                <div class="ready-title">ViaVersion + ViaBackwards + ViaRewind</div>
+                <div class="ready-sub" id="viaStatus">Not installed</div>
+              </div>
+              <button class="abtn primary" id="installViaBtn">Install Version Support</button>
+            </div>
+          </div>
+
+          <div class="panel" style="margin-top: 14px">
             <div class="panel-title">Current Server</div>
             <div class="server-info-grid">
               <div class="sinfo-row"><span class="sinfo-key">JAR</span><span class="sinfo-val" id="iJar">-</span></div>
@@ -580,6 +596,68 @@
                 </div>
                 <div class="cfg-row">
                   <div class="cfg-lbl">
+                    <div class="cfg-name">Sleep When Empty</div>
+                    <div class="cfg-desc">Minutes with no players before the server sleeps (0 = never). The first join attempt wakes it.</div>
+                  </div>
+                  <input class="cfg-inp" id="idleStop" placeholder="60" />
+                </div>
+                <div class="cfg-row">
+                  <div class="cfg-lbl">
+                    <div class="cfg-name">Optimized Java Flags</div>
+                    <div class="cfg-desc">Tuned G1 GC flags + faster chunk saving (recommended)</div>
+                  </div>
+                  <input type="checkbox" id="optFlags" />
+                </div>
+                <div class="cfg-row">
+                  <div class="cfg-lbl">
+                    <div class="cfg-name">Auto-Update Plugins</div>
+                    <div class="cfg-desc">Daily check that keeps Geyser/Floodgate and the Via version-support plugins current (downloads only when a new build exists)</div>
+                  </div>
+                  <input type="checkbox" id="autoUpdatePlugins" />
+                </div>
+                <div class="cfg-row">
+                  <div class="cfg-lbl">
+                    <div class="cfg-name">Auto-Update Server</div>
+                    <div class="cfg-desc">Daily check for new server jars. Never touches a running server — updates install when it stops or sleeps</div>
+                  </div>
+                  <input type="checkbox" id="autoUpdateServer" />
+                </div>
+                <div class="cfg-row">
+                  <div class="cfg-lbl">
+                    <div class="cfg-name">Update Channel</div>
+                    <div class="cfg-desc">Builds only = safe fixes for your current version. Latest game version = also upgrade to new Minecraft releases (a full backup is taken first)</div>
+                  </div>
+                  <select class="cfg-inp" id="autoUpdateChannel" style="max-width: 220px">
+                    <option value="build">Builds only (safe)</option>
+                    <option value="version">Latest game version</option>
+                  </select>
+                </div>
+                <div class="cfg-row">
+                  <div class="cfg-lbl">
+                    <div class="cfg-name">Check Now</div>
+                    <div class="cfg-desc">Run the server + plugin update check immediately</div>
+                  </div>
+                  <button class="abtn ghost sm" id="updateCheckBtn" type="button">Check for updates</button>
+                </div>
+                <div id="rootRows" hidden>
+                  <div class="root-banner">⚡ Root detected — power-ups unlocked</div>
+                  <div class="cfg-row">
+                    <div class="cfg-lbl">
+                      <div class="cfg-name">Root Boost on Start</div>
+                      <div class="cfg-desc">Force CPU performance mode, raise Java priority, and shield the server from Android's low-memory killer at every start</div>
+                    </div>
+                    <input type="checkbox" id="rootBoost" />
+                  </div>
+                  <div class="cfg-row">
+                    <div class="cfg-lbl">
+                      <div class="cfg-name">Boost Now</div>
+                      <div class="cfg-desc">Apply the root power-ups immediately</div>
+                    </div>
+                    <button class="abtn primary sm" id="rootBoostBtn" type="button">⚡ Boost</button>
+                  </div>
+                </div>
+                <div class="cfg-row">
+                  <div class="cfg-lbl">
                     <div class="cfg-name">Backup Retention</div>
                     <div class="cfg-desc">How many backups TermuCraft keeps</div>
                   </div>
@@ -709,10 +787,10 @@
           <div class="panel" style="margin-top: 12px">
             <div class="panel-title">Connection Info</div>
             <div class="tips-list">
-              <div class="tip-row">Panel: <span class="tip-cmd" id="panelLAN">-</span></div>
-              <div class="tip-row">Public Panel: <span class="tip-cmd" id="panelPublic">Not configured</span></div>
-              <div class="tip-row">Minecraft: <span class="tip-cmd" id="aLAN">-</span></div>
-              <div class="tip-row">Bedrock: <span class="tip-cmd" id="bedrockLAN">Not installed</span></div>
+              <div class="tip-row">Panel: <span class="tip-cmd copyable" id="panelLAN" title="Tap to copy">-</span></div>
+              <div class="tip-row">Public Panel: <span class="tip-cmd copyable" id="panelPublic" title="Tap to copy">Not configured</span></div>
+              <div class="tip-row">Minecraft: <span class="tip-cmd copyable" id="aLAN" title="Tap to copy">-</span></div>
+              <div class="tip-row">Bedrock: <span class="tip-cmd copyable" id="bedrockLAN" title="Tap to copy">Not installed</span></div>
               <div class="tip-row">DuckDNS Host: <span class="tip-cmd" id="duckDnsHost">Not configured</span></div>
               <div class="tip-row">DuckDNS Status: <span class="tip-cmd" id="duckDnsState">Disabled</span></div>
             </div>

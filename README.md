@@ -10,7 +10,7 @@
 
 TermuCraft is a web-based Minecraft server panel built for running and managing servers directly from Android through Termux. The goal is to make mobile hosting practical, manageable, and less annoying than doing everything by hand.
 
-Current build: `v0.7.6`
+Current build: `v0.8.0`
 
 ## Install
 
@@ -71,7 +71,16 @@ Instead of relying on scattered shell commands, manual file edits, and constant 
 - First-run account setup, in the installer or in the browser
 - Login rate limiting and persistent, hashed-at-rest sessions
 - Start, stop, restart, and force-kill controls
-- Live console output
+- Sleep mode: an empty server stops itself after a while (default 60 min) and the first join attempt wakes it back up automatically, with a friendly "starting now" message for the player
+- Optimized Java launch flags (tuned G1 GC) and faster chunk saving, on by default
+- Live console output, with ANSI color codes stripped and a REST fallback that keeps logs flowing even if the browser drops the WebSocket
+- Live CPU and memory sparklines, scaled to the real core count of the device (400% on a 4-core phone)
+- Tap-to-copy connection addresses and one-tap console log download
+- Friendly server.properties controls: toggle switches, dropdowns, +/- steppers, a "Cracked" switch, and resource pack settings — with the raw `key=value` always shown
+- Root power-ups: on rooted phones the panel can force CPU performance mode, raise the Java process priority, and shield the server from Android's low-memory killer (Settings → Root Boost)
+- One-click version support: installs ViaVersion + ViaBackwards + ViaRewind so Java players on older and newer game versions can join (Builds tab)
+- Automatic plugin updates: a daily check keeps Geyser/Floodgate and the Via plugins current — which is what keeps new Bedrock versions working — downloading only when a new build actually exists
+- Automatic server updates: a daily check keeps the server jar itself current. "Builds only" (default) applies safe fixes for your current version; "Latest game version" also upgrades to new Minecraft releases after taking a full backup. A running server is never touched — pending updates install when it stops or falls asleep
 - Server status and uptime tracking
 - Server property editing
 - File management for important config files

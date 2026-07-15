@@ -5,12 +5,14 @@
 
 const express = require("express");
 const { WebSocketServer } = require("ws");
-const { spawn, spawnSync, execFileSync } = require("child_process");
+const { spawn, spawnSync, execFile, execFileSync } = require("child_process");
 const https = require("https");
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const net = require("net");
+const dgram = require("dgram");
 const crypto = require("crypto");
 const zlib = require("zlib");
 
@@ -78,6 +80,16 @@ const CONFIG_DEFAULTS = {
   lastDownloadedChecksum: "",
   lastDownloadedChecksumType: "",
   requiredJavaMajor: 0,
+  idleStopMinutes: 60,
+  optimizedFlags: true,
+  rootBoost: false,
+  autoUpdatePlugins: true,
+  pluginVersions: {},
+  lastPluginUpdateAt: 0,
+  autoUpdateServer: true,
+  autoUpdateServerChannel: "build",
+  lastServerUpdateAt: 0,
+  lastServerBuild: 0,
 };
 
 const PRESETS = {
@@ -181,7 +193,13 @@ let logHistory = [];
 let onlinePlayers = {};
 let startTime = null;
 let downloadState = null;
-let systemStats = { cpu: 0, ram: 0, diskUsed: 0, diskTotal: 0 };
+let systemStats = {
+  cpu: 0,
+  ram: 0,
+  diskUsed: 0,
+  diskTotal: 0,
+  cpuCores: Math.max(1, os.cpus().length || 1),
+};
 let restartTimer = null;
 let pendingRestart = null;
 let expectedExit = false;
@@ -193,6 +211,19 @@ let crashState = {
   lastCrashSignal: null,
 };
 let rapidCrashCount = 0;
+// Sleep mode: an empty server is stopped after CONFIG.idleStopMinutes and a
+// tiny Minecraft-protocol listener takes over the port so the first join
+// attempt wakes it back up.
+let idleSince = null;
+let idleStopInProgress = false;
+let sleepState = null;
+let wakeListener = null;
+let wakeSockets = new Set();
+let wakeBedrockSocket = null;
+let pendingServerUpdate = null;
+let serverUpdateInProgress = false;
+let logSeq = 0;
+let prevProcCpu = null;
 let schedulerState = {
   lastBackupAt: 0,
   lastBroadcastAt: 0,
@@ -530,6 +561,34 @@ function buildNextConfig(baseConfig, patch = {}) {
       5,
       Number.parseInt(patch.duckDnsIntervalMinutes, 10) || 10,
     );
+  }
+  if (Object.prototype.hasOwnProperty.call(patch || {}, "idleStopMinutes")) {
+    const minutes = Number(patch.idleStopMinutes);
+    if (!Number.isFinite(minutes) || minutes < 0) {
+      throw new Error("Idle stop must be 0 (off) or a number of minutes");
+    }
+    nextConfig.idleStopMinutes = minutes;
+  }
+  if (Object.prototype.hasOwnProperty.call(patch || {}, "optimizedFlags")) {
+    nextConfig.optimizedFlags = !!patch.optimizedFlags;
+  }
+  if (Object.prototype.hasOwnProperty.call(patch || {}, "rootBoost")) {
+    nextConfig.rootBoost = !!patch.rootBoost;
+  }
+  if (Object.prototype.hasOwnProperty.call(patch || {}, "autoUpdatePlugins")) {
+    nextConfig.autoUpdatePlugins = !!patch.autoUpdatePlugins;
+  }
+  if (Object.prototype.hasOwnProperty.call(patch || {}, "autoUpdateServer")) {
+    nextConfig.autoUpdateServer = !!patch.autoUpdateServer;
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(patch || {}, "autoUpdateServerChannel")
+  ) {
+    const channel = String(patch.autoUpdateServerChannel || "").toLowerCase();
+    if (!["build", "version"].includes(channel)) {
+      throw new Error("Update channel must be build or version");
+    }
+    nextConfig.autoUpdateServerChannel = channel;
   }
   return nextConfig;
 }
@@ -1060,6 +1119,49 @@ function hasRootAccess() {
   return rootAccess;
 }
 
+function runRootCommand(command) {
+  return new Promise((resolve) => {
+    execFile("su", ["-c", command], { timeout: 10000 }, (error, stdout, stderr) => {
+      resolve({
+        ok: !error,
+        error: error ? String(stderr || error.message).trim() : "",
+      });
+    });
+  });
+}
+
+// Rooted phones get real power-ups Termux alone cannot do: lock the CPU into
+// performance mode, raise the Java process priority, and shield it from
+// Android's low-memory killer.
+async function applyRootBoost(pid) {
+  if (!hasRootAccess()) {
+    return { applied: false, steps: [] };
+  }
+  const steps = [];
+  const governor = await runRootCommand(
+    'for g in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo performance > "$g" 2>/dev/null; done',
+  );
+  steps.push({ step: "CPU governor set to performance", ...governor });
+  if (pid) {
+    const nice = await runRootCommand(`renice -n -10 -p ${pid}`);
+    steps.push({ step: `Java process priority raised (pid ${pid})`, ...nice });
+    const oom = await runRootCommand(
+      `echo -600 > /proc/${pid}/oom_score_adj`,
+    );
+    steps.push({
+      step: "Server shielded from Android's low-memory killer",
+      ...oom,
+    });
+  }
+  steps.forEach((entry) => {
+    addLog(
+      `[root] ${entry.step}: ${entry.ok ? "done" : `failed (${entry.error || "unknown"})`}`,
+      entry.ok ? "system" : "warn",
+    );
+  });
+  return { applied: true, steps };
+}
+
 function getClockTicksPerSecond() {
   if (clockTicks != null) {
     return clockTicks;
@@ -1201,6 +1303,32 @@ function updateSystemStatsFallback() {
   };
 }
 
+// Direct /proc reader: pidusage occasionally fails on Android (restricted
+// ps), but a process can always read its own children's /proc entries.
+function readProcPidStats(pid) {
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+    const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+    const ticks = Number(fields[11]) + Number(fields[12]); // utime + stime
+    const now = Date.now();
+    let cpu = 0;
+    if (prevProcCpu && prevProcCpu.pid === pid && now > prevProcCpu.at) {
+      const elapsedSec = (now - prevProcCpu.at) / 1000;
+      // USER_HZ is 100 on Linux/Android.
+      cpu = ((ticks - prevProcCpu.ticks) / 100 / elapsedSec) * 100;
+    }
+    prevProcCpu = { pid, ticks, at: now };
+    const status = fs.readFileSync(`/proc/${pid}/status`, "utf8");
+    const rss = status.match(/VmRSS:\s+(\d+)\s+kB/);
+    return {
+      cpu: Math.max(0, Math.round(cpu * 10) / 10),
+      ram: rss ? Math.round((Number(rss[1]) / 1024) * 10) / 10 : 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function updateSystemStats() {
   updateDiskStats();
   if (mcProcess && mcProcess.pid && hasRootAccess()) {
@@ -1221,12 +1349,22 @@ function updateSystemStats() {
           ram: Number((stats.memory / 1024 / 1024).toFixed(1)),
         };
       } else {
-        updateSystemStatsFallback();
+        const procStats = mcProcess ? readProcPidStats(mcProcess.pid) : null;
+        if (procStats) {
+          systemStats = { ...systemStats, ...procStats };
+        } else {
+          updateSystemStatsFallback();
+        }
       }
       broadcast({ type: "stats", ...systemStats });
     });
   } else if (mcProcess && mcProcess.pid) {
-    updateSystemStatsFallback();
+    const procStats = readProcPidStats(mcProcess.pid);
+    if (procStats) {
+      systemStats = { ...systemStats, ...procStats };
+    } else {
+      updateSystemStatsFallback();
+    }
     broadcast({ type: "stats", ...systemStats });
   } else {
     systemStats = { ...systemStats, cpu: 0, ram: 0 };
@@ -1426,6 +1564,7 @@ function getNetworkInfo() {
     duckDnsHost: getDuckDnsHost(),
     crossplayInstalled: hasGeyserInstalled() && hasFloodgateInstalled(),
     bedrockPort: hasGeyserInstalled() ? getBedrockPort() : null,
+    versionSupportInstalled: hasVersionSupportInstalled(),
     publicPanelUrl: getPublicPanelUrl(),
     duckDnsStatus: duckDnsState.lastError
       ? `error: ${duckDnsState.lastError}`
@@ -1435,8 +1574,15 @@ function getNetworkInfo() {
   };
 }
 
+// Paper/log4j emit terminal color codes when running under Termux; they
+// render as "[0;32;1m" garbage in the web console, so strip them here.
+const ANSI_ESCAPE_PATTERN =
+  // eslint-disable-next-line no-control-regex
+  /\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?/g;
+
 function addLog(rawText, type = "log") {
   const text = String(rawText || "")
+    .replace(ANSI_ESCAPE_PATTERN, "")
     .replace(/\r/g, "")
     .trim();
   if (!text) {
@@ -1445,18 +1591,25 @@ function addLog(rawText, type = "log") {
 
   verbosePrint(text, type);
 
-  const joinMatch = text.match(/:\s+(\w+) joined the game/);
-  const leaveMatch = text.match(/:\s+(\w+) left the game/);
+  // [\w.\-]+ instead of \w+: Floodgate prefixes Bedrock players with "."
+  // (".Steve joined the game") and they must count as online, otherwise the
+  // idle stop would put the server to sleep under active Bedrock players.
+  const joinMatch = text.match(/:\s+([\w.\-]+) joined the game/);
+  const leaveMatch = text.match(/:\s+([\w.\-]+) left the game/);
   const listMatch = text.match(
     /There are \d+ of a max of \d+ players online:(.*)/,
   );
 
   if (joinMatch) {
     onlinePlayers[joinMatch[1]] = { name: joinMatch[1], joined: Date.now() };
+    idleSince = null;
     broadcast({ type: "players", players: Object.values(onlinePlayers) });
   }
   if (leaveMatch) {
     delete onlinePlayers[leaveMatch[1]];
+    if (!Object.keys(onlinePlayers).length) {
+      idleSince = Date.now();
+    }
     broadcast({ type: "players", players: Object.values(onlinePlayers) });
   }
   if (listMatch) {
@@ -1468,10 +1621,18 @@ function addLog(rawText, type = "log") {
     names.forEach((name) => {
       onlinePlayers[name] = { name, joined: Date.now() };
     });
+    idleSince = names.length ? null : idleSince || Date.now();
     broadcast({ type: "players", players: Object.values(onlinePlayers) });
   }
 
+  // A server woken by a join attempt is fully back once it prints Done.
+  if (sleepState && /Done \([^)]*\)!/.test(text)) {
+    sleepState = null;
+    broadcast({ type: "status", ...buildStatusPayload() });
+  }
+
   const entry = {
+    seq: ++logSeq,
     text,
     type,
     time: new Date().toLocaleTimeString("en-US", { hour12: false }),
@@ -1517,6 +1678,7 @@ function buildStatusPayload() {
     running: !!mcProcess,
     config: getPublicConfig(),
     uptime: getUptime(),
+    sleep: getSleepInfo(),
     players: Object.values(onlinePlayers),
     jarExists: fs.existsSync(path.join(CONFIG.serverDir, CONFIG.serverJar)),
     download: downloadState,
@@ -1524,6 +1686,7 @@ function buildStatusPayload() {
     pendingRestart,
     lastCrash: crashState,
     backupCount: listBackups().length,
+    rootAvailable: hasRootAccess(),
   };
 }
 
@@ -2370,11 +2533,21 @@ function attachMcProcess(processHandle) {
     mcProcess = null;
     onlinePlayers = {};
     startTime = null;
+    idleSince = null;
     expectedExit = false;
     restartRequested = false;
     // Geyser writes its config during its first run - fix auth-type as soon
     // as the server stops so the next start has working crossplay.
     tuneGeyserConfig();
+    if (idleStopInProgress) {
+      // Idle timeout stop: arm the wake listener instead of staying down.
+      idleStopInProgress = false;
+      sleepState = { since: new Date().toISOString(), waking: false };
+      openWakeListener();
+    } else if (!manualRestart) {
+      sleepState = null;
+      closeWakeListener();
+    }
     updateSystemStats();
     broadcast({ type: "status", ...buildStatusPayload() });
 
@@ -2402,6 +2575,16 @@ function attachMcProcess(processHandle) {
         "crash recovery",
       );
     }
+
+    // A queued auto-update applies now that the server is down - but never
+    // while a restart is already scheduled to bring it right back up.
+    if (pendingServerUpdate && !pendingRestart) {
+      const update = pendingServerUpdate;
+      pendingServerUpdate = null;
+      applyServerUpdate(update).catch((error) => {
+        addLog(`Auto-update failed: ${error.message}`, "error");
+      });
+    }
   });
 }
 
@@ -2413,9 +2596,67 @@ function ensureJarExists() {
   return jarPath;
 }
 
+// Aikar's G1 flags, phone-tuned: AlwaysPreTouch is intentionally left out
+// because it slows startup and commits the whole heap up front, which a
+// shared Android device cannot afford.
+const OPTIMIZED_JVM_FLAGS = [
+  "-XX:+UseG1GC",
+  "-XX:+ParallelRefProcEnabled",
+  "-XX:MaxGCPauseMillis=200",
+  "-XX:+UnlockExperimentalVMOptions",
+  "-XX:+DisableExplicitGC",
+  "-XX:G1NewSizePercent=30",
+  "-XX:G1MaxNewSizePercent=40",
+  "-XX:G1HeapRegionSize=8M",
+  "-XX:G1ReservePercent=20",
+  "-XX:G1HeapWastePercent=5",
+  "-XX:G1MixedGCCountTarget=4",
+  "-XX:InitiatingHeapOccupancyPercent=15",
+  "-XX:G1MixedGCLiveThresholdPercent=90",
+  "-XX:G1RSetUpdatingPauseTimePercent=5",
+  "-XX:SurvivorRatio=32",
+  "-XX:+PerfDisableSharedMem",
+  "-XX:MaxTenuringThreshold=1",
+  "-Dusing.aikars.flags=https://mcflags.emc.gs",
+  "-Daikars.new.flags=true",
+];
+
+// Slow phone storage stalls the main thread when chunk writes are synchronous;
+// every Termux tuning guide flips this off.
+function tuneServerProperties() {
+  if (CONFIG.optimizedFlags === false) {
+    return;
+  }
+  const propsPath = path.join(CONFIG.serverDir, "server.properties");
+  try {
+    if (!fs.existsSync(propsPath)) {
+      return;
+    }
+    const raw = fs.readFileSync(propsPath, "utf8");
+    if (!/^sync-chunk-writes=true$/m.test(raw)) {
+      return;
+    }
+    fs.writeFileSync(
+      propsPath,
+      raw.replace(/^sync-chunk-writes=true$/m, "sync-chunk-writes=false"),
+    );
+    addLog(
+      "--- sync-chunk-writes set to false (faster world saving on phone storage) ---",
+      "system",
+    );
+  } catch {
+    // Best-effort tuning only.
+  }
+}
+
 function startServer(reason = "manual") {
   if (mcProcess) {
     throw new Error("Server is already running");
+  }
+  if (serverUpdateInProgress) {
+    throw new Error(
+      "A server update is downloading right now. Try again in a minute.",
+    );
   }
   ensureDir(CONFIG.serverDir);
   ensureJarExists();
@@ -2450,19 +2691,24 @@ function startServer(reason = "manual") {
   if (reason !== "crash recovery") {
     rapidCrashCount = 0;
   }
+  // The wake listener owns the game port while sleeping — release it first.
+  closeWakeListener();
+  if (reason !== "wake on join") {
+    sleepState = null;
+  }
   // Keep Geyser usable with Floodgate before every launch.
   tuneGeyserConfig();
+  tuneServerProperties();
   const eulaPath = path.join(CONFIG.serverDir, "eula.txt");
   if (!fs.existsSync(eulaPath)) {
     fs.writeFileSync(eulaPath, "eula=true\n");
   }
 
-  const launchArgs = [
-    `-Xmx${CONFIG.memory}`,
-    `-Xms${CONFIG.memory}`,
-    "-jar",
-    CONFIG.serverJar,
-  ];
+  const launchArgs = [`-Xmx${CONFIG.memory}`, `-Xms${CONFIG.memory}`];
+  if (CONFIG.optimizedFlags !== false) {
+    launchArgs.push(...OPTIMIZED_JVM_FLAGS);
+  }
+  launchArgs.push("-jar", CONFIG.serverJar);
   if (CONFIG.serverType !== "nukkit") {
     launchArgs.push("nogui");
   }
@@ -2476,9 +2722,13 @@ function startServer(reason = "manual") {
   clearTimeout(restartTimer);
   restartTimer = null;
   startTime = Date.now();
+  idleSince = Date.now();
   expectedExit = false;
   restartRequested = false;
   attachMcProcess(child);
+  if (CONFIG.rootBoost && hasRootAccess()) {
+    applyRootBoost(child.pid).catch(() => {});
+  }
   addLog(
     `--- Starting ${CONFIG.serverJar} (${CONFIG.memory} RAM, ${reason}) ---`,
     "system",
@@ -2502,6 +2752,319 @@ function forceKillServer() {
   expectedExit = true;
   mcProcess.kill("SIGKILL");
   addLog("--- Force killed ---", "error");
+}
+
+// --- Sleep mode -----------------------------------------------------------
+// After idleStopMinutes with zero players the server is stopped and a tiny
+// listener speaks just enough Minecraft protocol on the game port to show a
+// "sleeping" MOTD and wake the real server on the first join attempt.
+
+function idleStopMs() {
+  const minutes = Number(CONFIG.idleStopMinutes);
+  return Number.isFinite(minutes) && minutes > 0 ? minutes * 60 * 1000 : 0;
+}
+
+function getSleepInfo() {
+  const limit = idleStopMs();
+  const info = {
+    enabled: limit > 0,
+    idleStopMinutes: Number(CONFIG.idleStopMinutes) || 0,
+    sleeping: !!(sleepState && !sleepState.waking),
+    waking: !!(sleepState && sleepState.waking),
+    since: sleepState ? sleepState.since : null,
+    stopsInMs: null,
+  };
+  if (mcProcess && limit && !Object.keys(onlinePlayers).length && idleSince) {
+    info.stopsInMs = Math.max(0, limit - (Date.now() - idleSince));
+  }
+  return info;
+}
+
+function checkIdleStop() {
+  const limit = idleStopMs();
+  if (!mcProcess || !limit || Object.keys(onlinePlayers).length) {
+    return;
+  }
+  if (!idleSince) {
+    idleSince = Date.now();
+    return;
+  }
+  if (Date.now() - idleSince < limit) {
+    return;
+  }
+  idleStopInProgress = true;
+  addLog(
+    `--- No players for ${CONFIG.idleStopMinutes} min — stopping the server to save battery. The first join attempt wakes it back up. ---`,
+    "system",
+  );
+  try {
+    stopServer();
+  } catch {
+    idleStopInProgress = false;
+  }
+}
+
+function getJavaPort() {
+  try {
+    const raw = fs.readFileSync(
+      path.join(CONFIG.serverDir, "server.properties"),
+      "utf8",
+    );
+    const match = raw.match(/^server-port=(\d+)/m);
+    if (match) {
+      return Number(match[1]);
+    }
+  } catch {
+    // Fall through to the default port.
+  }
+  return 25565;
+}
+
+function readVarInt(buffer, offset = 0) {
+  let value = 0;
+  let size = 0;
+  for (;;) {
+    if (offset + size >= buffer.length || size > 4) {
+      return null;
+    }
+    const byte = buffer[offset + size];
+    value |= (byte & 0x7f) << (7 * size);
+    size += 1;
+    if ((byte & 0x80) === 0) {
+      return { value: value >>> 0, size };
+    }
+  }
+}
+
+function writeVarInt(value) {
+  const bytes = [];
+  let remaining = value >>> 0;
+  do {
+    let byte = remaining & 0x7f;
+    remaining >>>= 7;
+    if (remaining) {
+      byte |= 0x80;
+    }
+    bytes.push(byte);
+  } while (remaining);
+  return Buffer.from(bytes);
+}
+
+function mcString(text) {
+  const encoded = Buffer.from(text, "utf8");
+  return Buffer.concat([writeVarInt(encoded.length), encoded]);
+}
+
+function mcPacket(packetId, payload) {
+  const body = Buffer.concat([writeVarInt(packetId), payload]);
+  return Buffer.concat([writeVarInt(body.length), body]);
+}
+
+function readMcFrame(buffer) {
+  const length = readVarInt(buffer, 0);
+  if (!length || buffer.length < length.size + length.value) {
+    return null;
+  }
+  const packetId = readVarInt(buffer, length.size);
+  if (!packetId) {
+    return null;
+  }
+  const total = length.size + length.value;
+  return {
+    packetId: packetId.value,
+    payload: buffer.subarray(length.size + packetId.size, total),
+    consumed: total,
+  };
+}
+
+function parseHandshake(payload) {
+  const protocol = readVarInt(payload, 0);
+  if (!protocol) {
+    return { protocol: 0, nextState: 0 };
+  }
+  const address = readVarInt(payload, protocol.size);
+  if (!address) {
+    return { protocol: protocol.value, nextState: 0 };
+  }
+  const next = readVarInt(
+    payload,
+    protocol.size + address.size + address.value + 2,
+  );
+  return { protocol: protocol.value, nextState: next ? next.value : 0 };
+}
+
+function closeWakeListener() {
+  wakeSockets.forEach((socket) => socket.destroy());
+  wakeSockets.clear();
+  if (wakeListener) {
+    try {
+      wakeListener.close();
+    } catch {
+      // Already closed.
+    }
+    wakeListener = null;
+  }
+  if (wakeBedrockSocket) {
+    try {
+      wakeBedrockSocket.close();
+    } catch {
+      // Already closed.
+    }
+    wakeBedrockSocket = null;
+  }
+}
+
+// Bedrock (Geyser) side of sleep mode. RakNet is UDP: answer "unconnected
+// ping" (0x01) with a pong so the phone's server list shows the sleeping
+// MOTD, and treat "open connection request 1" (0x05) - the first packet of
+// a real join attempt - as the wake signal.
+const RAKNET_MAGIC = Buffer.from(
+  "00ffff00fefefefefdfdfdfd12345678",
+  "hex",
+);
+
+function openBedrockWakeListener() {
+  if (!hasGeyserInstalled()) {
+    return;
+  }
+  const port = getBedrockPort();
+  const serverGuid = crypto.randomBytes(8);
+  const socket = dgram.createSocket("udp4");
+  socket.on("message", (message, remote) => {
+    try {
+      if (!message.length) {
+        return;
+      }
+      if (message[0] === 0x01 && message.length >= 9) {
+        const advert = `${[
+          "MCPE",
+          "💤 Sleeping — join to wake",
+          "800",
+          "1.21",
+          "0",
+          "10",
+          serverGuid.readBigUInt64BE(0).toString(),
+          "TermuCraft",
+          "Survival",
+          "1",
+          String(port),
+          String(port),
+        ].join(";")};`;
+        const text = Buffer.from(advert, "utf8");
+        const pong = Buffer.concat([
+          Buffer.from([0x1c]),
+          message.subarray(1, 9), // echo the ping timestamp
+          serverGuid,
+          RAKNET_MAGIC,
+          Buffer.from([(text.length >> 8) & 0xff, text.length & 0xff]),
+          text,
+        ]);
+        socket.send(pong, remote.port, remote.address);
+      } else if (message[0] === 0x05) {
+        wakeFromSleep();
+      }
+    } catch {
+      // Malformed datagrams are ignored.
+    }
+  });
+  socket.on("error", (error) => {
+    addLog(`Bedrock sleep listener error: ${error.message}`, "warn");
+    wakeBedrockSocket = null;
+  });
+  socket.bind(port, "0.0.0.0", () => {
+    addLog(
+      `--- Bedrock sleep mode armed on UDP ${port}: a Bedrock join attempt also wakes the server. ---`,
+      "system",
+    );
+  });
+  wakeBedrockSocket = socket;
+}
+
+function wakeFromSleep() {
+  if (mcProcess || (sleepState && sleepState.waking)) {
+    return;
+  }
+  sleepState = { since: sleepState ? sleepState.since : null, waking: true };
+  closeWakeListener();
+  addLog("--- A player knocked! Waking the server... ---", "system");
+  broadcast({ type: "status", ...buildStatusPayload() });
+  try {
+    startServer("wake on join");
+  } catch (error) {
+    addLog(`Wake failed: ${error.message}`, "error");
+    sleepState = { since: new Date().toISOString(), waking: false };
+    openWakeListener(); // Re-arm so the next join attempt retries.
+  }
+}
+
+function openWakeListener() {
+  closeWakeListener();
+  const port = getJavaPort();
+  const listener = net.createServer((socket) => {
+    wakeSockets.add(socket);
+    let buffer = Buffer.alloc(0);
+    let phase = "handshake";
+    let clientProtocol = 0;
+    socket.setTimeout(10000, () => socket.destroy());
+    socket.on("error", () => {});
+    socket.on("close", () => wakeSockets.delete(socket));
+    socket.on("data", (chunk) => {
+      buffer = Buffer.concat([buffer, chunk]);
+      for (;;) {
+        const frame = readMcFrame(buffer);
+        if (!frame) {
+          return;
+        }
+        buffer = buffer.subarray(frame.consumed);
+        if (phase === "handshake") {
+          const handshake = parseHandshake(frame.payload);
+          clientProtocol = handshake.protocol;
+          if (handshake.nextState === 2) {
+            // Join attempt: tell the player we are starting, then wake up.
+            socket.end(
+              mcPacket(
+                0x00,
+                mcString(
+                  JSON.stringify({
+                    text: "⏳ TermuCraft is starting the server now!\nRejoin in about a minute.",
+                    color: "yellow",
+                  }),
+                ),
+              ),
+            );
+            wakeFromSleep();
+            return;
+          }
+          phase = "status";
+        } else if (phase === "status" && frame.packetId === 0x00) {
+          const motd = {
+            version: { name: "Sleeping", protocol: clientProtocol },
+            players: { max: 0, online: 0 },
+            description: {
+              text: "💤 Sleeping — join to wake the server",
+            },
+          };
+          socket.write(mcPacket(0x00, mcString(JSON.stringify(motd))));
+        } else if (phase === "status" && frame.packetId === 0x01) {
+          socket.end(mcPacket(0x01, frame.payload)); // ping -> pong
+          return;
+        }
+      }
+    });
+  });
+  listener.on("error", (error) => {
+    addLog(`Sleep listener error: ${error.message}`, "warn");
+    wakeListener = null;
+  });
+  listener.listen(port, "0.0.0.0", () => {
+    addLog(
+      `--- Sleep mode armed on port ${port}: the first join attempt wakes the server. ---`,
+      "system",
+    );
+    broadcast({ type: "status", ...buildStatusPayload() });
+  });
+  wakeListener = listener;
+  openBedrockWakeListener();
 }
 
 function scheduleRestart(delaySec, reason) {
@@ -2683,17 +3246,27 @@ async function fetchPaperDownload(version) {
   };
 }
 
-async function fetchPurpurDownload(version) {
-  const builds = await httpsGet(
-    `https://api.purpurmc.org/v2/purpur/${version}`,
+async function fetchPurpurLatestBuild(version) {
+  const detail = await httpsGet(
+    `https://api.purpurmc.org/v2/purpur/${encodeURIComponent(version)}`,
   );
-  const build = Math.max(...(builds.builds || []));
-  if (!Number.isFinite(build)) {
+  // The API returns builds as { latest, all }; older mirrors used an array.
+  const builds = detail?.builds;
+  const build = Array.isArray(builds)
+    ? Math.max(...builds.map(Number))
+    : Number(builds?.latest);
+  if (!Number.isFinite(build) || build <= 0) {
     throw new Error("No Purpur build found for that version");
   }
+  return build;
+}
+
+async function fetchPurpurDownload(version) {
+  const build = await fetchPurpurLatestBuild(version);
   return {
     url: `https://api.purpurmc.org/v2/purpur/${version}/${build}/download`,
     checksum: null,
+    build,
   };
 }
 
@@ -2797,6 +3370,149 @@ function getBedrockPort() {
   return 19132;
 }
 
+// --- Version support ------------------------------------------------------
+// Java: the Via plugin family translates protocols so clients on other game
+// versions can join (ViaVersion = newer clients, ViaBackwards = older
+// clients, ViaRewind = ancient 1.8-era clients). Bedrock: Geyser owns the
+// supported version range, so staying current IS the version support.
+
+const VIA_PLUGINS = [
+  { slug: "ViaVersion", name: "ViaVersion", fileName: "ViaVersion.jar" },
+  { slug: "ViaBackwards", name: "ViaBackwards", fileName: "ViaBackwards.jar" },
+  { slug: "ViaRewind", name: "ViaRewind", fileName: "ViaRewind.jar" },
+];
+
+function hasVersionSupportInstalled() {
+  return fs.existsSync(
+    path.join(CONFIG.serverDir, "plugins", "ViaVersion.jar"),
+  );
+}
+
+async function hangarLatestVersion(slug) {
+  const body = await httpsGetRaw(
+    `https://hangar.papermc.io/api/v1/projects/${slug}/latestrelease`,
+  );
+  const version = String(body).trim();
+  if (!version || version.length > 40 || /[<>{}\s]/.test(version)) {
+    throw new Error(`Unexpected Hangar response for ${slug}`);
+  }
+  return version;
+}
+
+async function getLatestGeyserBuild() {
+  const info = await httpsGet(
+    "https://download.geysermc.org/v2/projects/geyser/versions/latest/builds/latest",
+  );
+  return info && typeof info === "object" ? Number(info.build) || 0 : 0;
+}
+
+async function installVersionSupportPlugins() {
+  if (!supportsPluginCrossplay(CONFIG.serverType)) {
+    throw new Error(
+      "Version support install currently requires a Paper or Purpur server",
+    );
+  }
+  ensureDir(path.join(CONFIG.serverDir, "plugins"));
+  downloadState = {
+    name: "Version support plugins",
+    progress: 0,
+    total: VIA_PLUGINS.length,
+    done: false,
+    error: null,
+  };
+  broadcast({ type: "download", ...downloadState });
+
+  const installedVersions = {};
+  for (let i = 0; i < VIA_PLUGINS.length; i += 1) {
+    const plugin = VIA_PLUGINS[i];
+    const version = await hangarLatestVersion(plugin.slug);
+    const url = `https://hangar.papermc.io/api/v1/projects/${plugin.slug}/versions/${encodeURIComponent(version)}/PAPER/download`;
+    addLog(`--- Downloading ${plugin.name} ${version} ---`, "system");
+    downloadState.name = `${plugin.name} ${version}`;
+    downloadState.progress = i;
+    broadcast({ type: "download", ...downloadState });
+    const outPath = path.join(CONFIG.serverDir, "plugins", plugin.fileName);
+    await downloadFileWithProgress(url, outPath);
+    updateIntegrityRecord(outPath, {
+      source: "version support install",
+      package: plugin.slug.toLowerCase(),
+    });
+    installedVersions[plugin.slug] = version;
+  }
+
+  downloadState.progress = VIA_PLUGINS.length;
+  downloadState.done = true;
+  downloadState.name = "Version support ready";
+  broadcast({ type: "download", ...downloadState });
+  CONFIG.pluginVersions = {
+    ...(CONFIG.pluginVersions || {}),
+    ...installedVersions,
+  };
+  saveConfig();
+  addLog(
+    "--- Version support installed: ViaVersion + ViaBackwards + ViaRewind. Java players on older and newer versions can now join. Restart the server to load them. ---",
+    "system",
+  );
+}
+
+// Daily check that keeps Geyser/Floodgate and the Via plugins current.
+// Downloads happen only when the upstream version actually changed.
+async function maybeUpdatePlugins(force = false) {
+  if (!force && CONFIG.autoUpdatePlugins === false) {
+    return { checked: false, reason: "disabled" };
+  }
+  const now = Date.now();
+  const last = Number(CONFIG.lastPluginUpdateAt) || 0;
+  if (!force && now - last < 24 * 60 * 60 * 1000) {
+    return { checked: false, reason: "checked recently" };
+  }
+  const updated = [];
+  if (hasGeyserInstalled() && hasFloodgateInstalled()) {
+    try {
+      const latestBuild = await getLatestGeyserBuild();
+      const currentBuild =
+        Number((CONFIG.pluginVersions || {}).geyserBuild) || 0;
+      if (latestBuild && latestBuild !== currentBuild) {
+        addLog(
+          `--- Updating crossplay plugins (Geyser build ${currentBuild || "unknown"} -> ${latestBuild}) so new Bedrock versions keep working ---`,
+          "system",
+        );
+        await installCrossplayPlugins();
+        updated.push(`Geyser/Floodgate build ${latestBuild}`);
+      }
+    } catch (error) {
+      addLog(`Crossplay update check failed: ${error.message}`, "warn");
+    }
+  }
+  if (hasVersionSupportInstalled()) {
+    try {
+      const stale = [];
+      for (const plugin of VIA_PLUGINS) {
+        const latest = await hangarLatestVersion(plugin.slug);
+        if (latest !== (CONFIG.pluginVersions || {})[plugin.slug]) {
+          stale.push(`${plugin.slug} ${latest}`);
+        }
+      }
+      if (stale.length) {
+        addLog(
+          `--- Updating version-support plugins: ${stale.join(", ")} ---`,
+          "system",
+        );
+        await installVersionSupportPlugins();
+        updated.push(...stale);
+      }
+    } catch (error) {
+      addLog(`Version-support update check failed: ${error.message}`, "warn");
+    }
+  }
+  CONFIG.lastPluginUpdateAt = now;
+  saveConfig();
+  if (!updated.length) {
+    addLog("--- Plugin update check: everything is current ---", "system");
+  }
+  return { checked: true, updated };
+}
+
 async function installCrossplayPlugins() {
   if (!supportsPluginCrossplay(CONFIG.serverType)) {
     throw new Error(
@@ -2845,6 +3561,15 @@ async function installCrossplayPlugins() {
   downloadState.name = "Crossplay plugins ready";
   broadcast({ type: "download", ...downloadState });
   addLog("--- Crossplay plugins installed: Geyser + Floodgate ---", "system");
+  try {
+    CONFIG.pluginVersions = {
+      ...(CONFIG.pluginVersions || {}),
+      geyserBuild: await getLatestGeyserBuild(),
+    };
+    saveConfig();
+  } catch {
+    // Build tracking is best-effort; the daily check will retry.
+  }
   if (!tuneGeyserConfig()) {
     addLog(
       "--- Restart the server so Geyser loads. The panel switches Geyser to Floodgate auth automatically once its config exists. ---",
@@ -2872,6 +3597,7 @@ async function performServerDownload(type, version) {
     const info = await fetchPurpurDownload(version);
     downloadUrl = info.url;
     expectedChecksum = info.checksum;
+    CONFIG.lastServerBuild = info.build || 0;
   } else if (type === "vanilla") {
     const manifest = await getMojangManifest();
     const selected = manifest.versions.find((entry) => entry.id === version);
@@ -2924,6 +3650,137 @@ async function performServerDownload(type, version) {
   broadcast({ type: "download", ...downloadState });
   broadcast({ type: "config", config: getPublicConfig() });
   broadcast({ type: "jarReady" });
+}
+
+// --- Server auto-update ----------------------------------------------------
+// "build" channel: newer builds of the currently installed game version
+// (bug fixes, exploit patches - always safe). "version" channel: also jump
+// to new game versions, taking a full backup first because world upgrades
+// are one-way. The jar is never touched while the server is running: a
+// pending update applies when it stops or falls asleep.
+
+const AUTO_UPDATE_TYPES = ["paper", "purpur", "vanilla"];
+
+async function latestGameVersion(type) {
+  if (type === "paper") {
+    const data = await httpsGet("https://fill.papermc.io/v3/projects/paper");
+    const versions = Object.values(data.versions || {}).flat();
+    return versions[0] || "";
+  }
+  if (type === "purpur") {
+    const data = await httpsGet("https://api.purpurmc.org/v2/purpur");
+    const versions = [...(data.versions || [])].reverse();
+    return versions[0] || "";
+  }
+  if (type === "vanilla") {
+    const manifest = await getMojangManifest();
+    return manifest?.latest?.release || "";
+  }
+  return "";
+}
+
+async function findServerUpdate() {
+  const type = String(CONFIG.serverType || "").toLowerCase();
+  if (!AUTO_UPDATE_TYPES.includes(type) || !CONFIG.serverVersion) {
+    return null;
+  }
+  if (!fs.existsSync(path.join(CONFIG.serverDir, CONFIG.serverJar))) {
+    return null;
+  }
+  if (CONFIG.autoUpdateServerChannel === "version") {
+    const latest = await latestGameVersion(type);
+    if (latest && latest !== CONFIG.serverVersion) {
+      return {
+        type,
+        version: latest,
+        from: CONFIG.serverVersion,
+        kind: "game version",
+      };
+    }
+  }
+  if (type === "paper") {
+    const info = await fetchPaperDownload(CONFIG.serverVersion);
+    const remote = String(info.checksum?.value || "").toLowerCase();
+    const current = String(CONFIG.lastDownloadedChecksum || "").toLowerCase();
+    if (remote && current && remote !== current) {
+      return {
+        type,
+        version: CONFIG.serverVersion,
+        from: CONFIG.serverVersion,
+        kind: "build",
+      };
+    }
+  } else if (type === "purpur") {
+    const latestBuild = await fetchPurpurLatestBuild(CONFIG.serverVersion);
+    const currentBuild = Number(CONFIG.lastServerBuild) || 0;
+    if (latestBuild !== currentBuild) {
+      return {
+        type,
+        version: CONFIG.serverVersion,
+        from: CONFIG.serverVersion,
+        kind: "build",
+        build: latestBuild,
+      };
+    }
+  }
+  return null;
+}
+
+async function applyServerUpdate(update) {
+  serverUpdateInProgress = true;
+  try {
+    if (update.kind === "game version") {
+      addLog(
+        `--- Auto-update: creating a backup before upgrading ${update.from} -> ${update.version} ---`,
+        "system",
+      );
+      createBackup(`pre-update ${update.from} to ${update.version}`);
+    }
+    addLog(
+      `--- Auto-update: downloading ${update.type} ${update.version} (${update.kind} update) ---`,
+      "system",
+    );
+    await performServerDownload(update.type, update.version);
+    addLog(
+      `--- Auto-update done: ${update.type} ${update.version} takes effect on the next start. ---`,
+      "system",
+    );
+  } finally {
+    serverUpdateInProgress = false;
+  }
+}
+
+async function maybeUpdateServer(force = false) {
+  if (!force && CONFIG.autoUpdateServer === false) {
+    return { checked: false, reason: "disabled" };
+  }
+  const now = Date.now();
+  if (!force && now - (Number(CONFIG.lastServerUpdateAt) || 0) < 24 * 60 * 60 * 1000) {
+    return { checked: false, reason: "checked recently" };
+  }
+  CONFIG.lastServerUpdateAt = now;
+  saveConfig();
+  let update = null;
+  try {
+    update = await findServerUpdate();
+  } catch (error) {
+    addLog(`Server update check failed: ${error.message}`, "warn");
+    return { checked: true, error: error.message };
+  }
+  if (!update) {
+    addLog("--- Server update check: already on the latest ---", "system");
+    return { checked: true, updated: false };
+  }
+  if (mcProcess || serverUpdateInProgress) {
+    pendingServerUpdate = update;
+    addLog(
+      `--- ${update.type} ${update.version} (${update.kind} update) is available. It installs automatically when the server stops or sleeps. ---`,
+      "system",
+    );
+    return { checked: true, pending: true, update };
+  }
+  await applyServerUpdate(update);
+  return { checked: true, updated: true, update };
 }
 
 // Installers are Java programs too - run them with a JVM that fits the
@@ -3595,6 +4452,25 @@ app.get("/api/health", (req, res) => {
 
 app.use("/api", requireAuth);
 
+app.post("/api/root/boost", async (req, res) => {
+  if (!hasRootAccess()) {
+    res.json({ error: "Root access is not available on this device" });
+    return;
+  }
+  const result = await applyRootBoost(mcProcess ? mcProcess.pid : null);
+  res.json({ ok: true, ...result });
+});
+
+// REST fallback for the console: lets the UI keep streaming logs and stats
+// even when a mobile browser drops the WebSocket.
+app.get("/api/logs", (req, res) => {
+  const after = Number.parseInt(req.query.after, 10) || 0;
+  const logs = after
+    ? logHistory.filter((entry) => entry.seq > after)
+    : logHistory.slice(-200);
+  res.json({ logs, lastSeq: logSeq, stats: systemStats });
+});
+
 app.get("/api/status", (req, res) => {
   res.json(buildStatusPayload());
 });
@@ -4193,6 +5069,40 @@ app.post("/api/crossplay/install", async (req, res) => {
   }
 });
 
+app.post("/api/versionsupport/install", async (req, res) => {
+  try {
+    await installVersionSupportPlugins();
+    res.json({ ok: true });
+  } catch (error) {
+    downloadState = downloadState || {
+      name: "Version support install",
+      progress: 0,
+      total: 0,
+      done: false,
+      error: null,
+    };
+    downloadState.error = error.message;
+    broadcast({ type: "download", ...downloadState });
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.post("/api/plugins/update-check", async (req, res) => {
+  try {
+    res.json({ ok: true, ...(await maybeUpdatePlugins(true)) });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.post("/api/server/update-check", async (req, res) => {
+  try {
+    res.json({ ok: true, ...(await maybeUpdateServer(true)) });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
 app.get("/api/integrity", (req, res) => {
   res.json({
     records: INTEGRITY.records,
@@ -4213,6 +5123,20 @@ app.get("/", (req, res) => {
 
 updateSystemStats();
 setInterval(updateSystemStats, 1000);
+setInterval(checkIdleStop, 15 * 1000);
+// Keep crossplay + version-support plugins current (only downloads when the
+// upstream version changed; gated to once per day).
+setTimeout(() => {
+  maybeUpdatePlugins().catch(() => {});
+  maybeUpdateServer().catch(() => {});
+}, 30 * 1000);
+setInterval(
+  () => {
+    maybeUpdatePlugins().catch(() => {});
+    maybeUpdateServer().catch(() => {});
+  },
+  6 * 60 * 60 * 1000,
+);
 setInterval(maybeRunScheduledTasks, 30 * 1000);
 setInterval(() => {
   maybeRunDuckDnsUpdate().catch((error) => {
@@ -4259,7 +5183,13 @@ wss.on("connection", (socket, req) => {
 
   const tick = setInterval(() => {
     if (socket.readyState === 1) {
-      socket.send(JSON.stringify({ type: "uptime", uptime: getUptime() }));
+      socket.send(
+        JSON.stringify({
+          type: "uptime",
+          uptime: getUptime(),
+          sleep: getSleepInfo(),
+        }),
+      );
     } else {
       clearInterval(tick);
     }
